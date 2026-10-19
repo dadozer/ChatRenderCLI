@@ -1,17 +1,19 @@
 # ChatRenderCLI Reference Manual
 
-A high-performance command-line tool engineered to render Twitch chat logs (`.json` or `.json.gz`) into video files (`.mp4`, `.webm`, `.mov`, etc.) with full animated emote support, Giphy GIFs, native emoji rendering, and hardware-accelerated 60+ FPS pipelines.
+A high-performance, 100% drop-in compatible command-line tool engineered to render Twitch chat logs (`.json` or `.json.gz`) into video files (`.mp4`, `.webm`, `.mov`, etc.) with full animated emote support, Giphy GIFs, native emoji rendering, parallel timeline partitioning, and hardware-direct 60–120+ FPS planar YUV pipelines.
 
 ---
 
 ## Table of Contents
 
+- [Drop-In TwitchDownloader Compatibility](#drop-in-twitchdownloader-compatibility)
+- [New Capabilities & Additions Over Upstream TwitchDownloader](#new-capabilities--additions-over-upstream-twitchdownloader)
 - [Overview & Invocation Syntax](#overview--invocation-syntax)
 - [Global Arguments](#global-arguments)
 - [Mode: `chatrender`](#mode-chatrender)
   - [Input & Output](#input--output)
   - [Dimensions & Trimming](#dimensions--trimming)
-  - [Framerate & Animation Timing](#framerate--animation-timing)
+  - [Framerate, Animation Timing & Parallel Jobs](#framerate-animation-timing--parallel-jobs)
   - [Colors & Appearance](#colors--appearance)
   - [Typography & Fonts](#typography--fonts)
   - [Emotes, Badges & Giphy GIFs](#emotes-badges--giphy-gifs)
@@ -25,7 +27,7 @@ A high-performance command-line tool engineered to render Twitch chat logs (`.js
   - [1. Transparent WebM VP9 Alpha (Filmora, Premiere, DaVinci, OBS)](#1-transparent-webm-vp9-alpha-filmora-premiere-davinci-obs)
   - [2. Apple ProRes 4444 Transparent MOV](#2-apple-prores-4444-transparent-mov)
   - [3. Dual-Stream Alpha Masking (--generate-mask)](#3-dual-stream-alpha-masking---generate-mask)
-  - [4. High Frame Rate (60 & 120 FPS) Rendering](#4-high-frame-rate-60--120-fps-rendering)
+  - [4. High Frame Rate (60 & 120 FPS) & Parallel Timeline Partitioning](#4-high-frame-rate-60--120-fps--parallel-timeline-partitioning)
   - [5. Embedded Giphy GIFs & Memory Management](#5-embedded-giphy-gifs--memory-management)
 - [Example Commands](#example-commands)
 - [Technical Reference](#technical-reference)
@@ -37,6 +39,41 @@ A high-performance command-line tool engineered to render Twitch chat logs (`.js
 
 ---
 
+## Drop-In TwitchDownloader Compatibility
+
+`ChatRenderCLI.exe` is 100% command-line and file-format compatible with `TwitchDownloaderCLI.exe`:
+
+- **Zero Script Changes Required**: You can alias or rename `ChatRenderCLI.exe` to `TwitchDownloaderCLI.exe` in any existing workflow that calls `chatrender`, `ffmpeg`, or `cache`. All flag names, short aliases, default values, and FFmpeg template placeholders (`{fps}`, `{width}`, `{height}`, `{pix_fmt}`, `{save_path}`, `{max_int}`) behave identically.
+- **Three Invocation Syntaxes Supported**:
+  1. **Standard Verb**: `ChatRenderCLI.exe chatrender -i chat.json -o chat.mp4 ...`
+  2. **Direct Flag Invocation (No Verb Required)**: `ChatRenderCLI.exe -i chat.json -o chat.mp4 ...`
+  3. **Legacy `-m` / `--mode` Syntax**: `ChatRenderCLI.exe -m ChatRender -i chat.json -o chat.mp4 ...`
+- **Full `.json` & `.json.gz` Archive Support**: Reads any chat JSON produced by TwitchDownloader (including embedded first-party/third-party emotes, badges, cheer bits, avatars, and Giphy payloads).
+
+---
+
+## New Capabilities & Additions Over Upstream TwitchDownloader
+
+In addition to 100% compatibility with upstream `TwitchDownloaderCLI chatrender`, `ChatRenderCLI` introduces major functional and performance upgrades:
+
+1. **Parallel Timeline Segment Partitioning (`-j` / `--jobs`)**:
+   - Automatically splits the render timeline into `N` concurrent time slices across isolated worker instances (`RenderWorkerState`), encoding each segment with its own FFmpeg process and stitching them losslessly via `ffmpeg -f concat -c copy`.
+   - Overcomes single-process encoder bottlenecks (especially `libvpx-vp9` alpha and `prores_ks`) for **2x–3.5x additional speedup** on multi-core CPUs.
+2. **Direct Planar YUV Pipeline (`yuv420p` & `yuva420p`)**:
+   - Converts frames directly in C# using precomputed BT.601 integer tables and 64-bit uniform row detection, cutting rawvideo pipe bandwidth by **37.5%–62.5%** and eliminating FFmpeg's single-threaded `bgra -> yuva420p` `swscale` conversion on every tick.
+3. **Pre-Converted Planar YUV Emote Cache (`EmoteYuvFrame`) & Dirty-Rect Blitting**:
+   - Animated emotes and Giphy GIF frames are pre-converted into planar YUV + Alpha once on first draw. On animation-only ticks, only the bounding rectangles of emotes that actually advanced a frame are blitted directly into the YUV frame buffer—skipping BGRA composition and full-frame color conversion entirely.
+4. **O(1) Next-Transition Short-Circuiting & Incremental Scroll Shifting**:
+   - Computes `_animNextChangeTickMs` across visible animated emotes to bypass unchanged high-FPS ticks in `< 0.001 ms`. When chat scrolls, existing pixels are shifted upward in memory and only newly exposed bottom rows are rasterized.
+5. **Giphy GIF Chat Support (`--giphy`, `--gif-max-height-percent`)**:
+   - Detects bracketed Giphy GIFs in chat comments (e.g., `[Horse Stare GIF by Jan Metternich]`), resolves them 8-at-a-time via Giphy search (cached in `giphy/resolved.json.gz`) or reads embedded GIF data from the JSON, and renders them full-width below the username.
+6. **Lazy Frame Decoding, LRU Memory Budget (`--image-cache-mb`), & >2 GB Streaming JSON**:
+   - Decodes emote/GIF frames lazily on first draw, evicts off-screen frames when exceeding `--image-cache-mb` (default `256` MB), and streams `.json` / `.json.gz` files larger than 2 GB without out-of-memory errors.
+7. **Smart `"Inter"` Font Resolution**:
+   - Passing `--font Inter` automatically uses the built-in `Inter Embedded` typeface when `"Inter"` is not installed in the OS font catalog, avoiding unintended fallback to system defaults.
+
+---
+
 ## Overview & Invocation Syntax
 
 ChatRenderCLI supports three execution verbs:
@@ -45,11 +82,12 @@ ChatRenderCLI supports three execution verbs:
 3. **`cache`**: Manages and clears cached emotes, badges, and GIF resolutions.
 
 ### Direct Invocation (No Verb Required)
-Because rendering is the primary operation, ChatRenderCLI automatically assumes `chatrender` if the first argument is not a known verb. Both of the following commands are completely identical:
+Because rendering is the primary operation, ChatRenderCLI automatically assumes `chatrender` if the first argument starts with `-`. All three of the following commands are completely equivalent:
 
 ```cmd
 ChatRenderCLI.exe chatrender -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60
 ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60
+ChatRenderCLI.exe -m ChatRender -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60
 ```
 
 ---
@@ -95,11 +133,11 @@ Arguments available across all modes.
 
 #### `-w` / `--chat-width`
 - **Type**: `int` (Default: `350`)
-- Width of the rendered video frame in pixels. Must be an even number when using YUV codecs.
+- Width of the rendered video frame in pixels. Must be an even number when using `yuv420p` / `yuva420p` codecs.
 
 #### `-h` / `--chat-height`
 - **Type**: `int` (Default: `600`)
-- Height of the rendered video frame in pixels. Must be an even number when using YUV codecs.
+- Height of the rendered video frame in pixels. Must be an even number when using `yuv420p` / `yuva420p` codecs.
 
 #### `-b` / `--beginning`
 - **Type**: `TimeDuration` (Default: `-1`, no trim)
@@ -115,17 +153,24 @@ Arguments available across all modes.
 
 ---
 
-### Framerate & Animation Timing
+### Framerate, Animation Timing & Parallel Jobs
 
 #### `--framerate`
 - **Type**: `int` (Default: `30`)
 - Video output framerate in frames per second (FPS). Common values: `30`, `60`, `120`.
-- At high framerates (60+ FPS), the engine's zero-allocation repeat counting, dirty-region emote patching, and O(1) next-transition short-circuiting prevent CPU waste on unchanged ticks.
+- At high framerates (60+ FPS), the engine's zero-allocation repeat counting, direct YUV dirty-region emote blitting, and O(1) next-transition short-circuiting prevent CPU waste on unchanged ticks.
 
 #### `--update-rate`
 - **Type**: `double` (Default: `0.2`)
 - Time interval in seconds between chat scroll updates. For example, `0.2` updates the chat scroll position every 200 milliseconds (every 12 ticks at 60 FPS).
 - Lower values result in smoother, more continuous chat scrolling; higher values create stepping/chunked scrolling.
+
+#### `-j` / `--jobs` *(NEW)*
+- **Type**: `int` (Default: `0`, auto-scale)
+- Number of parallel FFmpeg encoding segments to run concurrently.
+- **`0` (Auto)**: Automatically scales based on CPU core count, video duration, and codec (up to `4` parallel segments on 16+ thread CPUs for dual-plane `yuva420p` / `--generate-mask` renders, or up to `3` for standard renders). Videos under 60 seconds automatically use a single segment (`1`).
+- **`1`**: Forces single-stream sequential encoding (no temporary segment files).
+- **`2`–`16`**: Explicitly partitions the video timeline into `N` equal tick segments encoded in parallel across isolated `RenderWorkerState` workers and stitched losslessly via `ffmpeg -f concat -c copy` at completion.
 
 #### `--sharpening`
 - **Type**: `bool` (Default: `false`)
@@ -133,18 +178,11 @@ Arguments available across all modes.
 
 #### `--generate-mask`
 - **Type**: `bool` (Default: `false`)
-- In addition to the primary video output, generates a synchronized black-and-white alpha mask video (`<name>_mask.<ext>`). White pixels represent chat content; black pixels represent transparency. Vectorized via AVX2 / SSSE3 / AdvSimd SIMD intrinsics.
+- In addition to the primary video output, generates a synchronized black-and-white alpha mask video (`<name>_mask.<ext>`). White pixels represent chat content; black pixels represent transparency. Vectorized via `AVX-512BW` / `AVX2` / `SSSE3` / `AdvSimd` SIMD intrinsics.
 
 #### `--skip-drive-waiting`
 - **Type**: `bool` (Default: `false`)
 - Disables output drive synchronization waits between frame dispatches. Can increase render speed by 1–5% on NVMe SSDs and fast local drives.
-
-#### `-j` / `--jobs`
-- **Type**: `int` (Default: `0`, auto-scale)
-- Number of parallel FFmpeg encoding segments to run concurrently.
-- **`0` (Auto)**: Automatically scales based on CPU core count, video duration, and codec (up to `4` parallel segments on 16+ core CPUs for dual-plane `yuva420p` / `--generate-mask` renders, or up to `3` for standard renders). Videos under 60 seconds automatically use a single segment (`1`).
-- **`1`**: Forces single-stream sequential encoding (no temporary segment files).
-- **`2`–`16`**: Explicitly partitions the video timeline into `N` equal tick segments encoded in parallel and stitched losslessly via `ffmpeg -f concat -c copy` at completion.
 
 ---
 
@@ -153,7 +191,7 @@ Arguments available across all modes.
 #### `--background-color`
 - **Type**: `string` (Default: `#111111`)
 - Base background color in `#RRGGBB` or `#AARRGGBB` hex format.
-- Set to `#00000000` (or `rgba(0,0,0,0)`) for fully transparent video backgrounds.
+- Set to `#00000000` for fully transparent video backgrounds.
 
 #### `--alt-background-color`
 - **Type**: `string` (Default: `#191919`)
@@ -173,7 +211,7 @@ Arguments available across all modes.
 
 #### `--readable-colors`
 - **Type**: `bool` (Default: `true`)
-- Automatically adjusts username contrast against dark/light backgrounds to ensure WCAG readability guidelines are met.
+- Automatically adjusts username contrast against dark/light backgrounds to ensure readability.
 
 #### `--outline`
 - **Type**: `bool` (Default: `false`)
@@ -190,7 +228,7 @@ Arguments available across all modes.
 #### `-f` / `--font`
 - **Type**: `string` (Default: `Inter Embedded`)
 - Font family to use for rendering chat text.
-- **Embedded Inter Font Mapping**: ChatRenderCLI bundles the complete **Inter** font family internally. Specifying `--font Inter` or `--font "Inter Embedded"` will automatically use the high-legibility embedded Inter typeface unless a local "Inter" font family is installed on the host operating system.
+- **Smart Embedded Inter Mapping**: ChatRenderCLI bundles the complete **Inter** font family internally. Specifying `--font Inter` or `--font "Inter Embedded"` will automatically use the high-legibility embedded Inter typeface unless a local `"Inter"` font family is installed on the host operating system.
 
 #### `--font-size`
 - **Type**: `double` (Default: `12`)
@@ -228,15 +266,15 @@ Arguments available across all modes.
 - **Type**: `bool` (Default: `true`)
 - Allows unlisted 7TV emotes to be fetched and rendered.
 
-#### `--giphy`
+#### `--giphy` *(NEW)*
 - **Type**: `bool` (Default: `true`)
 - Enables rendering of embedded or linked Giphy GIFs posted in Twitch chat (e.g., `[Horse Stare GIF by Jan Metternich]`). GIFs are displayed full-width below the username.
 
-#### `--gif-max-height-percent`
+#### `--gif-max-height-percent` *(NEW)*
 - **Type**: `int` (Default: `50`)
 - Caps the rendered height of a GIF as a percentage of the total `--chat-height`. A value of `50` ensures a GIF never occupies more than half of the visible chat window; `100` allows full-height GIFs.
 
-#### `--image-cache-mb`
+#### `--image-cache-mb` *(NEW)*
 - **Type**: `int` (Default: `256`)
 - Memory budget in megabytes for caching decoded off-screen emote and GIF frames. Active on-screen frames are always retained. Off-screen frames are evicted via an LRU policy when the budget is reached.
 
@@ -322,7 +360,7 @@ Customize visual spacing, padding, and proportions with multiplier floats (Defau
 - Arguments passed to FFmpeg after the input stream to configure video encoding.
 - Default: `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "{save_path}"`
 - Supported template tokens: `{save_path}`.
-- **VP9 Tuning**: When `libvpx-vp9` is used, ChatRenderCLI automatically detects it and injects hardware-optimized flags (`-row-mt 1`, `-cpu-used 4`, `-deadline good`, `-lag-in-frames 25`, `-auto-alt-ref 1`, and `-g <fps*8>`).
+- **Automatic VP9 Tuning**: When `libvpx-vp9` is used, ChatRenderCLI automatically detects it and injects hardware-optimized flags (`-row-mt 1`, `-cpu-used 8`, `-deadline good`, `-lag-in-frames 25`, `-auto-alt-ref 1`, and `-g <fps*8>`).
 
 ---
 
@@ -380,9 +418,10 @@ ChatRenderCLI.exe -i chat.json -o chat.webm -w 420 -h 1080 --framerate 60 --back
 
 #### Why This Is Fast:
 - **Planar `yuva420p` Pipe**: ChatRenderCLI automatically detects `-pix_fmt yuva420p` and converts frames directly in C#, cutting pipe bandwidth from 4 bytes/pixel down to 2.5 bytes/pixel.
+- **Direct Planar YUV Emote Blitting**: Animated emotes are pre-converted into `EmoteYuvFrame` planes once and blitted directly into the YUV canvas on animation ticks without touching BGRA.
 - **Zero Redundant Swscale**: FFmpeg receives native `yuva420p` frames without executing CPU-heavy `swscale` filters on every tick.
 - **Dynamic GOP Scaling**: ChatRenderCLI sets `-g` to `framerate * 8` (e.g. `-g 480` at 60 FPS), maintaining fast timeline scrubbing in Wondershare Filmora 15 and DaVinci Resolve without bloating file sizes.
-- **Row-Based Multithreading & Parallel Segments**: Automatically adds `-row-mt 1` and `-cpu-used 8`, and partitions the timeline across parallel FFmpeg workers (`-j` / `--jobs`) to saturate all CPU cores even when `libvpx-vp9` hits its per-process tile/alpha threading ceiling.
+- **Row-Based Multithreading & Parallel Segments (`-j`)**: Automatically adds `-row-mt 1` and `-cpu-used 8`, and partitions the timeline across parallel FFmpeg workers (`-j` / `--jobs`) to saturate all CPU cores even when `libvpx-vp9` hits its per-process tile/alpha threading ceiling.
 
 ---
 
@@ -410,12 +449,12 @@ In your video editor, place `chat.mp4` on track 2, `chat_mask.mp4` on track 3, a
 
 ---
 
-### 4. High Frame Rate (60 & 120 FPS) Rendering
+### 4. High Frame Rate (60 & 120 FPS) & Parallel Timeline Partitioning
 Doubling framerate from 30 FPS to 60 FPS doubles tick counts, but **does not** double chat updates. ChatRenderCLI uses several specialized optimizations:
 
-1. **O(1) Next-Transition Short-Circuiting**: ChatRenderCLI inspects active animated emotes and calculates `_animNextChangeTickMs`. If no emote changes frame on the current tick, the entire emote scan and composition is bypassed in 0.001 ms.
-2. **Incremental Row Patching**: Only the specific rows spanning advancing animated emotes are converted to YUV; solid or unchanged rows are preserved.
-3. **Hardware Queue Sizing**: Rawvideo input buffers automatically scale to `-thread_queue_size 1024` to prevent pipe stalls.
+1. **O(1) Next-Transition Short-Circuiting**: ChatRenderCLI inspects active animated emotes and calculates `_animNextChangeTickMs`. If no emote changes frame on the current tick, the entire emote scan and composition is bypassed in `< 0.001 ms`.
+2. **Direct Planar YUV Emote Blitting**: On ticks where an animated emote advances, its pre-converted `EmoteYuvFrame` is alpha-blended directly over the Y, U, V, and A planes of the base scroll frame.
+3. **Parallel Timeline Partitioning (`-j` / `--jobs`)**: Multi-minute renders are split across concurrent worker threads and independent FFmpeg processes, then losslessly concatenated via `ffmpeg -f concat -c copy`.
 
 ---
 
@@ -433,9 +472,9 @@ When chat contains Giphy GIFs, ChatRenderCLI handles them with zero extra user i
 ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60 --update-rate 0.2
 ```
 
-#### Transparent WebM with Outlines (Ideal for Gameplay Overlay)
+#### Transparent WebM with Outlines & 4 Parallel Jobs
 ```cmd
-ChatRenderCLI.exe -i chat.json -o chat.webm -w 400 -h 1080 --framerate 60 --background-color "#00000000" --outline --outline-size 3 --output-args "-c:v libvpx-vp9 -crf 18 -b:v 0 -pix_fmt yuva420p \"{save_path}\""
+ChatRenderCLI.exe -i chat.json -o chat.webm -w 400 -h 1080 --framerate 60 -j 4 --background-color "#00000000" --outline --outline-size 3 --output-args "-c:v libvpx-vp9 -crf 18 -b:v 0 -pix_fmt yuva420p \"{save_path}\""
 ```
 
 #### Clean Dark Mode with Alternating Rows

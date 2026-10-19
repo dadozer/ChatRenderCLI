@@ -1,4 +1,4 @@
-name: Build ChatRenderCLI
+name: Build ChatRenderCLI & ChatRenderGUI
 
 on:
   push:
@@ -26,19 +26,28 @@ jobs:
             Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lay295/TwitchDownloader/master/TwitchDownloaderCore/Resources/noto-emoji-2.051.zip" -OutFile "TwitchDownloaderCore/Resources/noto-emoji-2.051.zip"
           }
 
-      - name: Publish ChatRenderCLI (win-x64)
-        run: dotnet publish TwitchDownloaderCLI/TwitchDownloaderCLI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./publish
+      - name: Publish ChatRenderCLI.exe (win-x64)
+        run: dotnet publish TwitchDownloaderCLI/TwitchDownloaderCLI.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -o ./dist/win-x64
 
-      - name: Verify ChatRenderCLI.exe exists
+      - name: Publish ChatRenderGUI.exe (win-x64)
+        run: dotnet publish TwitchDownloaderWPF/TwitchDownloaderWPF.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:IncludeAllContentForSelfExtract=true -p:DebugType=none -p:DebugSymbols=false -o ./dist/win-x64
+
+      - name: Verify Executables Exist
         shell: pwsh
         run: |
-          if (!(Test-Path "./publish/ChatRenderCLI.exe")) {
-            Write-Error "ChatRenderCLI.exe was not created in ./publish"
+          if (!(Test-Path "./dist/win-x64/ChatRenderCLI.exe")) {
+            Write-Error "ChatRenderCLI.exe was not created in ./dist/win-x64"
+            exit 1
+          }
+          if (!(Test-Path "./dist/win-x64/ChatRenderGUI.exe")) {
+            Write-Error "ChatRenderGUI.exe was not created in ./dist/win-x64"
             exit 1
           }
 
-      - name: Upload ChatRenderCLI.exe Artifact
+      - name: Upload ChatRender-win-x64 Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ChatRenderCLI-win-x64
-          path: ./publish/ChatRenderCLI.exe
+          name: ChatRender-win-x64
+          path: |
+            ./dist/win-x64/ChatRenderCLI.exe
+            ./dist/win-x64/ChatRenderGUI.exe
