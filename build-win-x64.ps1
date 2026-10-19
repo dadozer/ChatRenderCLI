@@ -1,34 +1,43 @@
 $ErrorActionPreference = "Stop"
 
-$resourcesDir = Join-Path $PSScriptRoot "TwitchDownloaderCore\Resources"
-$twemojiZip = Join-Path $resourcesDir "twemoji-17.0.3.zip"
-$notoZip = Join-Path $resourcesDir "noto-emoji-2.051.zip"
+Write-Host "============================================================================" -ForegroundColor Cyan
+Write-Host "Building ChatRenderCLI.exe & ChatRenderGUI.exe (Windows x64 Release)" -ForegroundColor Cyan
+Write-Host "============================================================================" -ForegroundColor Cyan
 
-if (!(Test-Path $twemojiZip)) {
-    Write-Host "Downloading missing resource twemoji-17.0.3.zip..." -ForegroundColor Yellow
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lay295/TwitchDownloader/master/TwitchDownloaderCore/Resources/twemoji-17.0.3.zip" -OutFile $twemojiZip
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    Write-Error ".NET SDK was not found in PATH. Please install the .NET 10.0 SDK from https://dotnet.microsoft.com/download"
+    exit 1
 }
 
-if (!(Test-Path $notoZip)) {
-    Write-Host "Downloading missing resource noto-emoji-2.051.zip..." -ForegroundColor Yellow
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/lay295/TwitchDownloader/master/TwitchDownloaderCore/Resources/noto-emoji-2.051.zip" -OutFile $notoZip
-}
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$CliProjectPath = Join-Path $ScriptDir "TwitchDownloaderCLI\TwitchDownloaderCLI.csproj"
+$WpfProjectPath = Join-Path $ScriptDir "TwitchDownloaderWPF\TwitchDownloaderWPF.csproj"
+$OutputDir = Join-Path $ScriptDir "dist\win-x64"
 
-Write-Host "Building and publishing ChatRenderCLI.exe (win-x64, self-contained single-file)..." -ForegroundColor Cyan
-
-dotnet publish TwitchDownloaderCLI/TwitchDownloaderCLI.csproj `
+Write-Host "`n[1/2] Publishing ChatRenderCLI.exe..." -ForegroundColor Cyan
+dotnet publish $CliProjectPath `
     -c Release `
     -r win-x64 `
     --self-contained true `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
-    -o ./publish
+    -p:DebugType=none `
+    -p:DebugSymbols=false `
+    -o $OutputDir
 
-$exePath = Join-Path $PSScriptRoot "publish\ChatRenderCLI.exe"
-if (Test-Path $exePath) {
-    $fileInfo = Get-Item $exePath
-    Write-Host "Success! ChatRenderCLI.exe created at: $($fileInfo.FullName) ($([Math]::Round($fileInfo.Length / 1MB, 2)) MB)" -ForegroundColor Green
-} else {
-    Write-Error "Build failed: ChatRenderCLI.exe was not found in ./publish"
-    exit 1
-}
+Write-Host "`n[2/2] Publishing ChatRenderGUI.exe (WPF)..." -ForegroundColor Cyan
+dotnet publish $WpfProjectPath `
+    -c Release `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    -p:IncludeAllContentForSelfExtract=true `
+    -p:DebugType=none `
+    -p:DebugSymbols=false `
+    -o $OutputDir
+
+Write-Host ""
+Write-Host "[SUCCESS] Built standalone executables:" -ForegroundColor Green
+Write-Host "  $(Join-Path $OutputDir 'ChatRenderCLI.exe')" -ForegroundColor Green
+Write-Host "  $(Join-Path $OutputDir 'ChatRenderGUI.exe')" -ForegroundColor Green
