@@ -1,4 +1,6 @@
-﻿using SkiaSharp;
+using System.Buffers;
+using System.Collections.Concurrent;
+using SkiaSharp;
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 using System.Net;
@@ -36,6 +38,14 @@ namespace TwitchDownloaderCore
         };
 
         private static readonly string[] BttvZeroWidth = ["SoSnowy", "IceCold", "SantaHat", "TopHat", "ReinDeer", "CandyCane", "cvMask", "cvHazmat"];
+        // Giphy has no bulk search, so one page fetch per title. Concurrent, but not so many that Giphy throttles us.
+        private const int GIPHY_SEARCH_THREADS = 8;
+
+        // Hardware-adaptive I/O and codec header concurrency: scales from 4 threads on laptops up to 16 threads on 8C/16T+ desktops.
+        private static int AssetFetchParallelism => Math.Clamp(Environment.ProcessorCount, 4, 16);
+
+        private static readonly SearchValues<char> WhiteSpaceChars = SearchValues.Create("\t\n\v\f\r\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000");
+
         private const string SEVEN_TV_PROXY_HOST = "7tv-imageproxy.twitcharchives.workers.dev";
 
         public static async Task<GqlVideoResponse> GetVideoInfo(long videoId)
@@ -207,7 +217,7 @@ namespace TwitchDownloaderCore
             {
                 RequestUri = new Uri("https://gql.twitch.tv/gql"),
                 Method = HttpMethod.Post,
-                Content = new StringContent("{\"query\":\"query{user(login:\\\"" + channelName + "\\\"){clips(first: " + limit + (cursor == "" ? "" : ", after: \\\"" + cursor + "\\\"") +", criteria: { period: " + period + " }) {  edges { cursor, node { id, slug, title, createdAt, curator, { id, displayName }, durationSeconds, thumbnailURL, viewCount, game { id, displayName } } }, pageInfo { hasNextPage, hasPreviousPage } }}}\",\"variables\":{}}", Encoding.UTF8, "application/json")
+                Content = new StringContent("{\"query\":\"query{user(login:\\\"" + channelName + "\\\"){clips(first: " + limit + (cursor == "" ? "" : ", after: \\\"" + cursor + "\\\"") + ", criteria: { period: " + period + " }) {  edges { cursor, node { id, slug, title, createdAt, curator, { id, displayName }, durationSeconds, thumbnailURL, viewCount, game { id, displayName } } }, pageInfo { hasNextPage, hasPreviousPage } }}}\",\"variables\":{}}", Encoding.UTF8, "application/json")
             };
             request.Headers.Add("Client-ID", "kd1unb4b3q4t58fwlpcbzcbnm76a8fp");
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
@@ -222,7 +232,14 @@ namespace TwitchDownloaderCore
 
             EmoteResponse emoteResponse = new();
 
-            if (getBttv)
+            Task bttvTask = getBttv ? LoadBttvAsync() : Task.CompletedTask;
+            Task ffzTask = getFfz ? LoadFfzAsync() : Task.CompletedTask;
+            Task stvTask = getStv ? LoadStvAsync() : Task.CompletedTask;
+
+            await Task.WhenAll(bttvTask, ffzTask, stvTask);
+            return emoteResponse;
+
+            async Task LoadBttvAsync()
             {
                 try
                 {
@@ -231,7 +248,7 @@ namespace TwitchDownloaderCore
                         emoteResponse.BTTV = await GetBttvEmotesMetadata(streamerId, cancellationToken);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "BetterTTV", logger);
                 }
@@ -240,9 +257,7 @@ namespace TwitchDownloaderCore
                 await RefreshOrLoadProviderMetadata(emoteResponse.BTTV, bttvDir, "BetterTTV", streamerId, offline, logger, cancellationToken);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (getFfz)
+            async Task LoadFfzAsync()
             {
                 try
                 {
@@ -251,7 +266,7 @@ namespace TwitchDownloaderCore
                         emoteResponse.FFZ = await GetFfzEmotesMetadata(streamerId, cancellationToken);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "FFZ", logger);
                 }
@@ -260,9 +275,7 @@ namespace TwitchDownloaderCore
                 await RefreshOrLoadProviderMetadata(emoteResponse.FFZ, ffzDir, "FFZ", streamerId, offline, logger, cancellationToken);
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (getStv)
+            async Task LoadStvAsync()
             {
                 try
                 {
@@ -271,16 +284,14 @@ namespace TwitchDownloaderCore
                         emoteResponse.STV = await GetStvEmotesMetadata(streamerId, allowUnlistedEmotes, logger, cancellationToken);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "7TV", logger);
                 }
 
                 var stvDir = new DirectoryInfo(Path.Combine(cacheFolder, "stv"));
-                await RefreshOrLoadProviderMetadata(emoteResponse.FFZ, stvDir, "7TV", streamerId, offline, logger, cancellationToken);
+                await RefreshOrLoadProviderMetadata(emoteResponse.STV, stvDir, "7TV", streamerId, offline, logger, cancellationToken);
             }
-
-            return emoteResponse;
 
             static void LogProviderException(Exception ex, string providerName, ITaskLogger logger)
             {
@@ -299,15 +310,19 @@ namespace TwitchDownloaderCore
         private static async Task<List<EmoteResponseItem>> GetBttvEmotesMetadata(int streamerId, CancellationToken cancellationToken)
         {
             var globalEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri("https://api.betterttv.net/3/cached/emotes/global", UriKind.Absolute));
-            using var globalEmoteResponse = await httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var channelEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://api.betterttv.net/3/cached/users/twitch/{streamerId}", UriKind.Absolute));
+
+            using var globalEmoteResponseTask = httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var channelEmoteResponseTask = httpClient.SendAsync(channelEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            using var globalEmoteResponse = await globalEmoteResponseTask;
             globalEmoteResponse.EnsureSuccessStatusCode();
             var BTTV = await globalEmoteResponse.Content.ReadFromJsonAsync<List<BTTVEmote>>(cancellationToken: cancellationToken);
 
-            //Channel might not have BTTV emotes
+            // Channel might not have BTTV emotes
             try
             {
-                var channelEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://api.betterttv.net/3/cached/users/twitch/{streamerId}", UriKind.Absolute));
-                using var channelEmoteResponse = await httpClient.SendAsync(channelEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var channelEmoteResponse = await channelEmoteResponseTask;
                 channelEmoteResponse.EnsureSuccessStatusCode();
 
                 var bttvChannel = await channelEmoteResponse.Content.ReadFromJsonAsync<BTTVChannelEmoteResponse>(cancellationToken: cancellationToken);
@@ -316,7 +331,7 @@ namespace TwitchDownloaderCore
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
 
-            var returnList = new List<EmoteResponseItem>();
+            var returnList = new List<EmoteResponseItem>(BTTV.Count);
             foreach (var emote in BTTV)
             {
                 string id = emote.id;
@@ -332,15 +347,19 @@ namespace TwitchDownloaderCore
         private static async Task<List<EmoteResponseItem>> GetFfzEmotesMetadata(int streamerId, CancellationToken cancellationToken)
         {
             var globalEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri("https://api.betterttv.net/3/cached/frankerfacez/emotes/global", UriKind.Absolute));
-            using var globalEmoteResponse = await httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var channelEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://api.betterttv.net/3/cached/frankerfacez/users/twitch/{streamerId}", UriKind.Absolute));
+
+            using var globalEmoteResponseTask = httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var channelEmoteResponseTask = httpClient.SendAsync(channelEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            using var globalEmoteResponse = await globalEmoteResponseTask;
             globalEmoteResponse.EnsureSuccessStatusCode();
             var FFZ = await globalEmoteResponse.Content.ReadFromJsonAsync<List<FFZEmote>>(cancellationToken: cancellationToken);
 
-            //Channel might not have FFZ emotes
+            // Channel might not have FFZ emotes
             try
             {
-                var channelEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://api.betterttv.net/3/cached/frankerfacez/users/twitch/{streamerId}", UriKind.Absolute));
-                using var channelEmoteResponse = await httpClient.SendAsync(channelEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var channelEmoteResponse = await channelEmoteResponseTask;
                 channelEmoteResponse.EnsureSuccessStatusCode();
 
                 var channelEmotes = await channelEmoteResponse.Content.ReadFromJsonAsync<List<FFZEmote>>(cancellationToken: cancellationToken);
@@ -348,7 +367,7 @@ namespace TwitchDownloaderCore
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
 
-            var returnList = new List<EmoteResponseItem>();
+            var returnList = new List<EmoteResponseItem>(FFZ.Count);
             foreach (var emote in FFZ)
             {
                 string id = emote.id.ToString();
@@ -366,7 +385,12 @@ namespace TwitchDownloaderCore
         private static async Task<List<EmoteResponseItem>> GetStvEmotesMetadata(int streamerId, bool allowUnlistedEmotes, ITaskLogger logger, CancellationToken cancellationToken)
         {
             var globalEmoteRequest = new HttpRequestMessage(HttpMethod.Get, new Uri("https://7tv.io/v3/emote-sets/global", UriKind.Absolute));
-            using var globalEmoteResponse = await httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var streamerInfoRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://7tv.io/v3/users/twitch/{streamerId}", UriKind.Absolute));
+
+            using var globalEmoteResponseTask = httpClient.SendAsync(globalEmoteRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var streamerInfoResponseTask = httpClient.SendAsync(streamerInfoRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            using var globalEmoteResponse = await globalEmoteResponseTask;
             globalEmoteResponse.EnsureSuccessStatusCode();
             var globalEmoteObject = await globalEmoteResponse.Content.ReadFromJsonAsync<STVGlobalEmoteResponse>(cancellationToken: cancellationToken);
             var stvEmotes = globalEmoteObject.emotes;
@@ -374,8 +398,7 @@ namespace TwitchDownloaderCore
             // Channel might not be registered on 7tv
             try
             {
-                var streamerInfoRequest = new HttpRequestMessage(HttpMethod.Get, new Uri($"https://7tv.io/v3/users/twitch/{streamerId}", UriKind.Absolute));
-                using var streamerInfoResponse = await httpClient.SendAsync(streamerInfoRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var streamerInfoResponse = await streamerInfoResponseTask;
                 streamerInfoResponse.EnsureSuccessStatusCode();
 
                 var streamerInfoObject = await streamerInfoResponse.Content.ReadFromJsonAsync<STVChannelEmoteResponse>(cancellationToken: cancellationToken);
@@ -392,7 +415,7 @@ namespace TwitchDownloaderCore
             }
             catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
 
-            var returnList = new List<EmoteResponseItem>();
+            var returnList = new List<EmoteResponseItem>(stvEmotes.Count);
             foreach (var stvEmote in stvEmotes)
             {
                 STVData emoteData = stvEmote.data;
@@ -427,13 +450,6 @@ namespace TwitchDownloaderCore
                     logger.LogVerbose($"{stvEmote.name} has disallowed flags, skipping. Flags: {emoteFlags}.");
                     continue;
                 }
-
-                // // 7TV emotes are not available over TLS 1.2, so we need to use a proxy for now
-                // emoteHost.url = Regex.Replace(
-                //     emoteHost.url,
-                //     @"^(//)[^/]+",
-                //     m => $"{m.Groups[1].Value}{SEVEN_TV_PROXY_HOST}"
-                // );
 
                 var emoteUrl = $"https:{emoteHost.url}/[scale]x.{emoteFormat}";
                 var emoteResponse = new EmoteResponseItem { Id = stvEmote.id, Code = stvEmote.name, ImageType = emoteFormat, ImageUrl = emoteUrl };
@@ -505,6 +521,42 @@ namespace TwitchDownloaderCore
             }
         }
 
+        /// <summary>
+        /// Tokenizes all comment bodies in a single O(Comments) pass into a HashSet of whitespace-delimited tokens,
+        /// replacing O(Emotes * Comments) regex evaluations.
+        /// </summary>
+        private static HashSet<string> BuildCommentWordSet([AllowNull] List<Comment> comments)
+        {
+            if (comments is null)
+            {
+                return null;
+            }
+
+            var wordSet = new HashSet<string>(StringComparer.Ordinal);
+            var lookup = wordSet.GetAlternateLookup<ReadOnlySpan<char>>();
+
+            foreach (var comment in comments)
+            {
+                var body = comment.message?.body;
+                if (string.IsNullOrEmpty(body))
+                {
+                    continue;
+                }
+
+                var span = body.AsSpan();
+                foreach (var range in span.SplitAny(WhiteSpaceChars))
+                {
+                    var token = span[range];
+                    if (!token.IsEmpty)
+                    {
+                        lookup.Add(token);
+                    }
+                }
+            }
+
+            return wordSet;
+        }
+
         public static async Task<List<TwitchEmote>> GetThirdPartyEmotes(List<Comment> comments, int streamerId, string cacheFolder, ITaskLogger logger, EmbeddedData embeddedData = null, bool bttv = true, bool ffz = true, bool stv = true, bool allowUnlistedEmotes = true, bool offline = false, CancellationToken cancellationToken = default)
         {
             // No 3rd party emotes are wanted
@@ -540,7 +592,9 @@ namespace TwitchDownloaderCore
                 }
             }
 
-            EmoteResponse emoteDataResponse = await GetThirdPartyEmotesMetadata(streamerId, bttv, ffz, stv, allowUnlistedEmotes, cacheFolder, offline, logger, cancellationToken);
+            var metadataTask = GetThirdPartyEmotesMetadata(streamerId, bttv, ffz, stv, allowUnlistedEmotes, cacheFolder, offline, logger, cancellationToken);
+            var commentWords = BuildCommentWordSet(comments);
+            EmoteResponse emoteDataResponse = await metadataTask;
 
             DirectoryInfo bttvFolder = new DirectoryInfo(Path.Combine(cacheFolder, "bttv"));
             DirectoryInfo ffzFolder = new DirectoryInfo(Path.Combine(cacheFolder, "ffz"));
@@ -550,9 +604,9 @@ namespace TwitchDownloaderCore
             {
                 try
                 {
-                    await FetchEmoteImages(comments, emoteDataResponse.BTTV, emotes, bttvFolder, "BetterTTV", offline, logger, cancellationToken);
+                    await FetchEmoteImages(comments, commentWords, emoteDataResponse.BTTV, emotes, bttvFolder, "BetterTTV", offline, logger, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "BetterTTV", logger);
                 }
@@ -562,9 +616,9 @@ namespace TwitchDownloaderCore
             {
                 try
                 {
-                    await FetchEmoteImages(comments, emoteDataResponse.FFZ, emotes, ffzFolder, "FFZ", offline, logger, cancellationToken);
+                    await FetchEmoteImages(comments, commentWords, emoteDataResponse.FFZ, emotes, ffzFolder, "FFZ", offline, logger, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "FFZ", logger);
                 }
@@ -574,9 +628,9 @@ namespace TwitchDownloaderCore
             {
                 try
                 {
-                    await FetchEmoteImages(comments, emoteDataResponse.STV, emotes, stvFolder, "7TV", offline, logger, cancellationToken);
+                    await FetchEmoteImages(comments, commentWords, emoteDataResponse.STV, emotes, stvFolder, "7TV", offline, logger, cancellationToken);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     LogProviderException(ex, "7TV", logger);
                 }
@@ -584,60 +638,97 @@ namespace TwitchDownloaderCore
 
             return emotes.Values.ToList();
 
-            static async Task FetchEmoteImages([AllowNull] IEnumerable<Comment> comments, IEnumerable<EmoteResponseItem> emoteResponse, Dictionary<string, TwitchEmote> emotes,
+            static async Task FetchEmoteImages([AllowNull] List<Comment> comments, [AllowNull] HashSet<string> commentWords, IEnumerable<EmoteResponseItem> emoteResponse, Dictionary<string, TwitchEmote> emotes,
                 DirectoryInfo cacheFolder, string providerName, bool offline, ITaskLogger logger, CancellationToken cancellationToken)
             {
                 if (!cacheFolder.Exists)
                     cacheFolder = CreateDirectory(cacheFolder.FullName);
 
-                IEnumerable<EmoteResponseItem> emoteResponseQuery;
-                if (comments is null)
-                {
-                    emoteResponseQuery = emoteResponse;
-                }
-                else
-                {
-                    emoteResponseQuery = from emote in emoteResponse
-                        where !emotes.ContainsKey(emote.Code)
-                        let regex = new Regex($@"(?<=^|\s){Regex.Escape(emote.Code)}(?=$|\s)")
-                        where comments.Any(comment => regex.IsMatch(comment.message.body))
-                        select emote;
-                }
+                var candidates = new List<EmoteResponseItem>();
+                var seenCodes = new HashSet<string>(StringComparer.Ordinal);
 
-                int fromCache = 0, fromDownload = 0;
-                foreach (var emote in emoteResponseQuery)
+                foreach (var emote in emoteResponse)
                 {
-                    var emoteUrl = emote.ImageUrl.Replace("[scale]", "2");
-                    var expectedCachePath = Path.Combine(cacheFolder.FullName, $"{emote.Id}_2.{emote.ImageType}");
-                    var wasInCache = File.Exists(expectedCachePath);
-
-                    try
+                    if (emotes.ContainsKey(emote.Code) || !seenCodes.Add(emote.Code))
                     {
-                        var (bytes, codec) = await GetImage(cacheFolder, emoteUrl, emote.Id, 2, emote.ImageType, offline, logger, cancellationToken);
-                        if (bytes is null)
-                        {
-                            continue;
-                        }
+                        continue;
+                    }
 
-                        var newEmote = new TwitchEmote(bytes, codec, EmoteProvider.ThirdParty, 2, emote.Id, emote.Code, emote.IsZeroWidth);
+                    if (comments is null)
+                    {
+                        candidates.Add(emote);
+                        continue;
+                    }
 
-                        if (!emotes.TryAdd(emote.Code, newEmote))
+                    if (!emote.Code.AsSpan().ContainsAny(WhiteSpaceChars))
+                    {
+                        if (commentWords.Contains(emote.Code))
                         {
-                            // Should never occur, but just in case
-                            newEmote.Dispose();
-                        }
-                        else if (wasInCache)
-                        {
-                            fromCache++;
-                        }
-                        else
-                        {
-                            fromDownload++;
+                            candidates.Add(emote);
                         }
                     }
-                    catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+                    else
                     {
-                        logger.LogWarning($"Got {(int)ex.StatusCode}: {ex.StatusCode} when fetching {emote.Code} ({emoteUrl}).");
+                        var regex = new Regex($@"(?<=^|\s){Regex.Escape(emote.Code)}(?=$|\s)");
+                        if (comments.Any(comment => regex.IsMatch(comment.message.body)))
+                        {
+                            candidates.Add(emote);
+                        }
+                    }
+                }
+
+                if (candidates.Count == 0)
+                {
+                    return;
+                }
+
+                var loadedResults = new (TwitchEmote Emote, bool WasFromCache)[candidates.Count];
+
+                await Parallel.ForEachAsync(
+                    Enumerable.Range(0, candidates.Count),
+                    new ParallelOptions { MaxDegreeOfParallelism = AssetFetchParallelism, CancellationToken = cancellationToken },
+                    async (index, ct) =>
+                    {
+                        var emote = candidates[index];
+                        var emoteUrl = emote.ImageUrl.Replace("[scale]", "2");
+
+                        try
+                        {
+                            var (bytes, codec, wasInCache) = await GetImageInternalAsync(cacheFolder, emoteUrl, emote.Id, 2, emote.ImageType, offline, logger, ct);
+                            if (bytes is null)
+                            {
+                                return;
+                            }
+
+                            var newEmote = new TwitchEmote(bytes, codec, EmoteProvider.ThirdParty, 2, emote.Id, emote.Code, emote.IsZeroWidth);
+                            loadedResults[index] = (newEmote, wasInCache);
+                        }
+                        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+                        {
+                            logger.LogWarning($"Got {(int)ex.StatusCode}: {ex.StatusCode} when fetching {emote.Code} ({emoteUrl}).");
+                        }
+                    });
+
+                int fromCache = 0, fromDownload = 0;
+                for (int i = 0; i < loadedResults.Length; i++)
+                {
+                    var (newEmote, wasInCache) = loadedResults[i];
+                    if (newEmote is null)
+                    {
+                        continue;
+                    }
+
+                    if (!emotes.TryAdd(newEmote.Name, newEmote))
+                    {
+                        newEmote.Dispose();
+                    }
+                    else if (wasInCache)
+                    {
+                        fromCache++;
+                    }
+                    else
+                    {
+                        fromDownload++;
                     }
                 }
 
@@ -659,6 +750,289 @@ namespace TwitchDownloaderCore
                 };
 
                 logger.LogError($"{message} Some {providerName} emotes may not be present for this session.");
+            }
+        }
+
+        /// <summary>Resolves the Giphy titles posted across <paramref name="comments"/> to their GIF, without downloading any images.</summary>
+        /// <remarks>Prefers what is already recorded in <paramref name="embeddedData"/>, then the on disk resolution cache, then a Giphy search.</remarks>
+        public static async Task<Dictionary<string, GiphyResolver.GiphyGif>> ResolveGiphyGifs(List<Comment> comments, string cacheFolder, ITaskLogger logger,
+            EmbeddedData embeddedData = null, bool offline = false, Action<int> reportProgress = null, CancellationToken cancellationToken = default)
+        {
+            var gifFolder = new DirectoryInfo(Path.Combine(cacheFolder, "giphy"));
+            if (!gifFolder.Exists)
+                gifFolder = CreateDirectory(gifFolder.FullName);
+
+            // Which GIF a title refers to does not change, so resolutions are remembered between runs. Failures are
+            // remembered too, as a null, so a re-run does not search again for every title Giphy could not answer.
+            var remembered = LoadResolvedGifs(gifFolder, logger);
+            var resolutions = new Dictionary<string, GiphyResolver.GiphyGif>(StringComparer.OrdinalIgnoreCase);
+            var pending = new List<string>();
+
+            foreach (var title in GiphyResolver.GetTitles(comments))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var known = embeddedData?.gifs?.FirstOrDefault(x => title.Equals(x.name, StringComparison.OrdinalIgnoreCase));
+                var knownUrl = known?.url ?? (known?.id is null ? null : GiphyResolver.MediaUrl(known.id));
+                if (knownUrl is not null)
+                {
+                    resolutions[title] = new GiphyResolver.GiphyGif(known.id, knownUrl, known.width, known.height);
+                }
+                else if (remembered.TryGetValue(title, out var cached))
+                {
+                    if (cached is not null)
+                    {
+                        resolutions[title] = cached.Value;
+                    }
+                }
+                else
+                {
+                    pending.Add(title);
+                }
+            }
+
+            // Searching Giphy is one page fetch per title and is by far the slow part, so they run concurrently.
+            // A busy VOD can post well over a thousand distinct GIFs.
+            if (pending.Count > 0 && !offline)
+            {
+                var searchResults = new ConcurrentDictionary<string, GiphyResolver.GiphyGif?>(StringComparer.OrdinalIgnoreCase);
+                var completed = 0;
+
+                await Parallel.ForEachAsync(pending,
+                    new ParallelOptions { MaxDegreeOfParallelism = GIPHY_SEARCH_THREADS, CancellationToken = cancellationToken },
+                    async (title, token) =>
+                    {
+                        try
+                        {
+                            searchResults[title] = await GiphyResolver.ResolveAsync(title, logger, token);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            logger.LogVerbose($"An exception occurred while searching Giphy for '{title}': {ex.Message}.");
+                        }
+
+                        reportProgress?.Invoke(Interlocked.Increment(ref completed) * 100 / pending.Count);
+                    });
+
+                foreach (var (title, result) in searchResults)
+                {
+                    remembered[title] = result;
+                    if (result is not null)
+                    {
+                        resolutions[title] = result.Value;
+                    }
+                }
+
+                SaveResolvedGifs(gifFolder, remembered, logger);
+            }
+
+            return resolutions;
+        }
+
+        /// <summary>Fetches the images of the Giphy GIFs posted across <paramref name="comments"/>, keyed by the Giphy title.</summary>
+        /// <remarks>The GIFs come back undecoded, so that a caller only pays for the frames of the ones it actually draws.</remarks>
+        public static async Task<List<TwitchEmote>> GetGiphyGifs(List<Comment> comments, string cacheFolder, ITaskLogger logger, EmbeddedData embeddedData = null, bool offline = false,
+            Action<int> reportProgress = null, CancellationToken cancellationToken = default)
+        {
+            var gifs = new Dictionary<string, TwitchEmote>(StringComparer.OrdinalIgnoreCase);
+
+            // Load our embedded GIFs
+            foreach (var gifData in embeddedData?.gifs ?? [])
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (gifData.data is not { Length: > 0 })
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var embeddedGif = new TwitchEmote(gifData.data, null, EmoteProvider.Giphy, 1, gifData.id, gifData.name) { Url = gifData.url };
+                    if (!gifs.TryAdd(gifData.name, embeddedGif))
+                    {
+                        embeddedGif.Dispose();
+                        logger.LogVerbose($"Tried to add duplicate GIF from embedded data: {gifData.name}.");
+                    }
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    logger.LogVerbose($"An exception occurred while loading embedded GIF '{gifData.name}': {e.Message}.");
+                }
+            }
+
+            // The loop below reports over every title, so letting the resolve report too would run the bar twice
+            var resolutions = await ResolveGiphyGifs(comments, cacheFolder, logger, embeddedData, offline, null, cancellationToken);
+            var gifFolder = new DirectoryInfo(Path.Combine(cacheFolder, "giphy"));
+            if (!gifFolder.Exists)
+                gifFolder = CreateDirectory(gifFolder.FullName);
+
+            var titles = GiphyResolver.GetTitles(comments).ToList();
+            int fromEmbed = 0, fromCache = 0, fromDownload = 0, unresolved = 0, processed = 0;
+
+            var fetchIndices = new List<int>(titles.Count);
+            for (int i = 0; i < titles.Count; i++)
+            {
+                var title = titles[i];
+                if (gifs.ContainsKey(title))
+                {
+                    fromEmbed++;
+                    reportProgress?.Invoke(Interlocked.Increment(ref processed) * 100 / titles.Count);
+                    continue;
+                }
+
+                if (!resolutions.ContainsKey(title))
+                {
+                    unresolved++;
+                    reportProgress?.Invoke(Interlocked.Increment(ref processed) * 100 / titles.Count);
+                    continue;
+                }
+
+                fetchIndices.Add(i);
+            }
+
+            if (fetchIndices.Count > 0)
+            {
+                var fetchedResults = new (TwitchEmote Gif, bool WasInCache, bool Failed)[titles.Count];
+
+                await Parallel.ForEachAsync(
+                    fetchIndices,
+                    new ParallelOptions { MaxDegreeOfParallelism = AssetFetchParallelism, CancellationToken = cancellationToken },
+                    async (titleIndex, ct) =>
+                    {
+                        var title = titles[titleIndex];
+                        var resolution = resolutions[title];
+
+                        try
+                        {
+                            var (bytes, codec, wasInCache) = await GetImageInternalAsync(gifFolder, resolution.Url, resolution.Id, 1, "gif", offline, logger, ct);
+                            if (bytes is null)
+                            {
+                                fetchedResults[titleIndex] = (null, false, true);
+                                return;
+                            }
+
+                            // Constructing reads the header only, so this does not pay for the frames
+                            var newGif = new TwitchEmote(bytes, codec, EmoteProvider.Giphy, 1, resolution.Id, title) { Url = resolution.Url };
+
+                            // A url can outlive the GIF it points at: resolutions are cached between runs and archived into
+                            // chat files, so this may be fetching one recorded long ago. Giphy answers those with a
+                            // "content is not available" image under a 200, which only the size gives away.
+                            if (resolution.Width > 0 && resolution.Height > 0 && (newGif.Width != resolution.Width || newGif.Height != resolution.Height))
+                            {
+                                logger.LogVerbose(
+                                    $"Giphy served {newGif.Width}x{newGif.Height} for '{title}' but advertised {resolution.Width}x{resolution.Height}, discarding it.");
+                                newGif.Dispose();
+                                DeleteCachedImage(gifFolder, resolution.Id, 1, "gif", logger);
+                                fetchedResults[titleIndex] = (null, false, true);
+                                return;
+                            }
+
+                            fetchedResults[titleIndex] = (newGif, wasInCache, false);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            fetchedResults[titleIndex] = (null, false, true);
+                            logger.LogVerbose($"An exception occurred while fetching GIF '{title}': {ex.Message}.");
+                        }
+                        finally
+                        {
+                            reportProgress?.Invoke(Interlocked.Increment(ref processed) * 100 / titles.Count);
+                        }
+                    });
+
+                foreach (var titleIndex in fetchIndices)
+                {
+                    var (newGif, wasInCache, failed) = fetchedResults[titleIndex];
+                    if (failed || newGif is null)
+                    {
+                        unresolved++;
+                        continue;
+                    }
+
+                    if (!gifs.TryAdd(titles[titleIndex], newGif))
+                    {
+                        newGif.Dispose();
+                    }
+                    else if (wasInCache)
+                    {
+                        fromCache++;
+                    }
+                    else
+                    {
+                        fromDownload++;
+                    }
+                }
+            }
+
+            if (titles.Count > 0)
+            {
+                logger.LogInfo(
+                    $"Loaded {gifs.Count} of {titles.Count} chat GIFs from cache/download - {fromEmbed} embedded, {fromCache} cached, " +
+                    $"{fromDownload} newly downloaded, {unresolved} unresolved.");
+            }
+
+            return gifs.Values.ToList();
+        }
+
+        // Remembers which GIF each title resolved to. Searching Giphy is the slow part and the answer does not change,
+        // so a re-render of a chat with no embedded GIF data reuses this instead of searching for every title again.
+        private static Dictionary<string, GiphyResolver.GiphyGif?> LoadResolvedGifs(DirectoryInfo cacheDir, ITaskLogger logger)
+        {
+            var resolved = new Dictionary<string, GiphyResolver.GiphyGif?>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var file = new FileInfo(Path.Combine(cacheDir.FullName, "resolved.json.gz"));
+                if (!file.Exists)
+                {
+                    return resolved;
+                }
+
+                using var fs = file.OpenRead();
+                using var gs = new GZipStream(fs, CompressionMode.Decompress);
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, GiphyResolver.GiphyGif?>>(gs, JsonSerializerOptions);
+                foreach (var (title, gif) in loaded ?? [])
+                {
+                    resolved[title] = gif;
+                }
+            }
+            catch (Exception e)
+            {
+                logger.LogVerbose($"Failed to read the Giphy resolution cache: {e.Message}");
+            }
+
+            return resolved;
+        }
+
+        private static void SaveResolvedGifs(DirectoryInfo cacheDir, Dictionary<string, GiphyResolver.GiphyGif?> resolved, ITaskLogger logger)
+        {
+            try
+            {
+                using var fs = File.Create(Path.Combine(cacheDir.FullName, "resolved.json.gz"));
+                using var gs = new GZipStream(fs, CompressionLevel.SmallestSize);
+                JsonSerializer.Serialize(gs, resolved, JsonSerializerOptions);
+            }
+            catch (Exception e)
+            {
+                logger.LogVerbose($"Failed to write the Giphy resolution cache: {e.Message}");
+            }
+        }
+
+        // Removes a cached image so a rejected download is not reused next run
+        private static void DeleteCachedImage(DirectoryInfo cacheDir, string imageId, int imageScale, string imageType, ITaskLogger logger)
+        {
+            try
+            {
+                var file = new FileInfo(Path.Combine(cacheDir.FullName, $"{imageId}_{imageScale}.{imageType}"));
+                if (file.Exists)
+                {
+                    file.Delete();
+                }
+            }
+            catch (Exception e) when (e is IOException or SecurityException or UnauthorizedAccessException)
+            {
+                logger.LogVerbose($"Failed to delete cached {imageId}: {e.Message}");
             }
         }
 
@@ -695,48 +1069,53 @@ namespace TwitchDownloaderCore
                 }
             }
 
-            var toFetch = new HashSet<string>();
-            foreach (var comment in comments.Where(c => c.message.fragments != null))
+            var toFetch = new List<string>();
+            var seenIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var comment in comments)
             {
+                if (comment.message?.fragments is null)
+                    continue;
+
                 foreach (var fragment in comment.message.fragments)
                 {
                     var id = fragment.emoticon?.emoticon_id;
-                    if (id is not null)
+                    if (id is not null && !emotes.ContainsKey(id) && seenIds.Add(id))
                     {
                         toFetch.Add(id);
                     }
                 }
             }
 
-            var failedEmotes = new HashSet<string>();
-            foreach (var id in toFetch)
+            if (toFetch.Count > 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var loadedEmotes = new TwitchEmote[toFetch.Count];
 
-                if (failedEmotes.Contains(id))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var (bytes, codec) = await GetImage(emoteFolder, $"https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0", id, 2, "png", offline, logger, cancellationToken);
-                    if (bytes is null)
+                await Parallel.ForEachAsync(
+                    Enumerable.Range(0, toFetch.Count),
+                    new ParallelOptions { MaxDegreeOfParallelism = AssetFetchParallelism, CancellationToken = cancellationToken },
+                    async (index, ct) =>
                     {
-                        continue;
-                    }
+                        var id = toFetch[index];
+                        try
+                        {
+                            var (bytes, codec, _) = await GetImageInternalAsync(emoteFolder, $"https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0", id, 2, "png", offline, logger, ct);
+                            if (bytes is null)
+                            {
+                                return;
+                            }
 
-                    var newEmote = new TwitchEmote(bytes, codec, EmoteProvider.FirstParty, 2, id, id);
+                            loadedEmotes[index] = new TwitchEmote(bytes, codec, EmoteProvider.FirstParty, 2, id, id);
+                        }
+                        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
+                    });
 
-                    if (!emotes.TryAdd(id, newEmote))
+                for (int i = 0; i < loadedEmotes.Length; i++)
+                {
+                    var newEmote = loadedEmotes[i];
+                    if (newEmote is not null && !emotes.TryAdd(newEmote.Id, newEmote))
                     {
-                        // This should never occur, but just in case
                         newEmote.Dispose();
                     }
-                }
-                catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-                {
-                    failedEmotes.Add(id);
                 }
             }
 
@@ -756,9 +1135,6 @@ namespace TwitchDownloaderCore
                 Content = new StringContent("{\"query\":\"query{badges{imageURL(size:DOUBLE),description,title,setID,version}}\",\"variables\":{}}", Encoding.UTF8, "application/json")
             };
             globalBadgeRequest.Headers.Add("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko");
-            using var globalBadgeResponse = await httpClient.SendAsync(globalBadgeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            globalBadgeResponse.EnsureSuccessStatusCode();
-            var globalBadges = (await globalBadgeResponse.Content.ReadFromJsonAsync<GqlGlobalBadgeResponse>(cancellationToken: cancellationToken)).data.badges.GroupBy(x => x.name).ToDictionary(x => x.Key, x => x.ToList());
 
             var subBadgeRequest = new HttpRequestMessage()
             {
@@ -767,49 +1143,84 @@ namespace TwitchDownloaderCore
                 Content = new StringContent("{\"query\":\"query{user(id: " + streamerId + "){broadcastBadges{imageURL(size:DOUBLE),description,title,setID,version}}}\",\"variables\":{}}", Encoding.UTF8, "application/json")
             };
             subBadgeRequest.Headers.Add("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko");
-            using var subBadgeResponse = await httpClient.SendAsync(subBadgeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            using var globalBadgeResponseTask = httpClient.SendAsync(globalBadgeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var subBadgeResponseTask = httpClient.SendAsync(subBadgeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            using var globalBadgeResponse = await globalBadgeResponseTask;
+            globalBadgeResponse.EnsureSuccessStatusCode();
+            var globalBadges = (await globalBadgeResponse.Content.ReadFromJsonAsync<GqlGlobalBadgeResponse>(cancellationToken: cancellationToken)).data.badges.GroupBy(x => x.name).ToDictionary(x => x.Key, x => x.ToList());
+
+            using var subBadgeResponse = await subBadgeResponseTask;
             subBadgeResponse.EnsureSuccessStatusCode();
             var subBadges = (await subBadgeResponse.Content.ReadFromJsonAsync<GqlSubBadgeResponse>(cancellationToken: cancellationToken)).data.user.badges.GroupBy(x => x.name).ToDictionary(x => x.Key, x => x.ToList());
 
             List<EmbedChatBadge> badges = new List<EmbedChatBadge>();
 
-            var nameList = comments.Where(comment => comment.message.user_badges != null)
-                .SelectMany(comment => comment.message.user_badges)
-                .Where(badge => !string.IsNullOrWhiteSpace(badge._id))
-                .Where(badge => globalBadges.ContainsKey(badge._id) || subBadges.ContainsKey(badge._id))
-                .Select(badge => badge._id).Distinct();
+            // Track exact (badge._id, badge.version) pairs used in comments so we only fetch and decode versions that are actually drawn
+            var usedVersionsByBadge = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            foreach (var comment in comments)
+            {
+                if (comment.message?.user_badges is null)
+                    continue;
 
-            foreach (var name in nameList)
+                foreach (var badge in comment.message.user_badges)
+                {
+                    if (string.IsNullOrWhiteSpace(badge._id) || string.IsNullOrWhiteSpace(badge.version))
+                        continue;
+
+                    if (!globalBadges.ContainsKey(badge._id) && !subBadges.ContainsKey(badge._id))
+                        continue;
+
+                    if (!usedVersionsByBadge.TryGetValue(badge._id, out var versionSet))
+                    {
+                        versionSet = new HashSet<string>(StringComparer.Ordinal);
+                        usedVersionsByBadge[badge._id] = versionSet;
+                    }
+                    versionSet.Add(badge.version);
+                }
+            }
+
+            foreach (var (name, usedVersions) in usedVersionsByBadge)
             {
                 Dictionary<string, ChatBadgeData> versions = new();
                 if (globalBadges.TryGetValue(name, out var globalBadge))
                 {
                     foreach (var badge in globalBadge)
                     {
-                        versions[badge.version] = new()
+                        if (usedVersions.Contains(badge.version))
                         {
-                            title = badge.title,
-                            description = badge.description,
-                            url = badge.image_url_2x
-                        };
+                            versions[badge.version] = new()
+                            {
+                                title = badge.title,
+                                description = badge.description,
+                                url = badge.image_url_2x
+                            };
+                        }
                     }
                 }
 
-                //Prefer channel specific badges over global ones
+                // Prefer channel specific badges over global ones
                 if (subBadges.TryGetValue(name, out var subBadge))
                 {
                     foreach (var badge in subBadge)
                     {
-                        versions[badge.version] = new()
+                        if (usedVersions.Contains(badge.version))
                         {
-                            title = badge.title,
-                            description = badge.description,
-                            url = badge.image_url_2x
-                        };
+                            versions[badge.version] = new()
+                            {
+                                title = badge.title,
+                                description = badge.description,
+                                url = badge.image_url_2x
+                            };
+                        }
                     }
                 }
 
-                badges.Add(new EmbedChatBadge() { name = name, versions = versions });
+                if (versions.Count > 0)
+                {
+                    badges.Add(new EmbedChatBadge() { name = name, versions = versions });
+                }
             }
 
             return badges;
@@ -856,47 +1267,67 @@ namespace TwitchDownloaderCore
             if (!badgeFolder.Exists)
                 badgeFolder = CreateDirectory(badgeFolder.FullName);
 
-            foreach (var badge in badgesData.Where(badge => !badges.ContainsKey(badge.name)))
+            var pendingBadges = badgesData.Where(b => !badges.ContainsKey(b.name)).ToList();
+            if (pendingBadges.Count > 0)
             {
-                try
-                {
-                    Dictionary<string, ChatBadgeData> versions = new();
-                    foreach (var (version, data) in badge.versions)
+                var loadedBadges = new ChatBadge[pendingBadges.Count];
+
+                await Parallel.ForEachAsync(
+                    Enumerable.Range(0, pendingBadges.Count),
+                    new ParallelOptions { MaxDegreeOfParallelism = AssetFetchParallelism, CancellationToken = cancellationToken },
+                    async (index, ct) =>
                     {
-                        string id = data.url.GetNthOccurrence('/', ^2).ToString();
-                        var (bytes, codec) = await GetImage(badgeFolder, data.url, id, 2, "png", false, logger, cancellationToken);
-                        if (bytes is null)
+                        var badge = pendingBadges[index];
+                        try
                         {
-                            continue;
+                            Dictionary<string, ChatBadgeData> versions = new(badge.versions.Count);
+                            foreach (var (version, data) in badge.versions)
+                            {
+                                string id = data.url.GetNthOccurrence('/', ^2).ToString();
+                                var (bytes, codec, _) = await GetImageInternalAsync(badgeFolder, data.url, id, 2, "png", false, logger, ct);
+                                if (bytes is null)
+                                {
+                                    continue;
+                                }
+
+                                versions.Add(version, new ChatBadgeData
+                                {
+                                    title = data.title,
+                                    description = data.description,
+                                    bytes = bytes,
+                                    Codec = codec,
+                                });
+                            }
+
+                            if (versions.Count > 0)
+                            {
+                                loadedBadges[index] = new ChatBadge(badge.name, versions);
+                            }
                         }
+                        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
+                    });
 
-                        versions.Add(version, new ChatBadgeData
-                        {
-                            title = data.title,
-                            description = data.description,
-                            bytes = bytes,
-                            Codec = codec,
-                        });
-                    }
-
-                    var newBadge = new ChatBadge(badge.name, versions);
-                    if (!badges.TryAdd(badge.name, newBadge))
+                for (int i = 0; i < loadedBadges.Length; i++)
+                {
+                    var newBadge = loadedBadges[i];
+                    if (newBadge is not null && !badges.TryAdd(newBadge.Name, newBadge))
                     {
                         newBadge.Dispose();
                     }
                 }
-                catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
             }
 
             return badges.Values.ToList();
         }
 
-        public static async Task<Dictionary<string, SKBitmap>> GetEmojis(string cacheFolder, EmojiVendor emojiVendor, ITaskLogger logger, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Ensures that the requested emoji vendor archive is extracted to disk and returns the paths of all emoji PNG files
+        /// without eagerly decoding all ~3,689 bitmaps into memory.
+        /// </summary>
+        public static async Task<string[]> GetEmojiFilesAsync(string cacheFolder, EmojiVendor emojiVendor, CancellationToken cancellationToken = default)
         {
-            var returnCache = new Dictionary<string, SKBitmap>();
-
             if (emojiVendor == EmojiVendor.None)
-                return returnCache;
+                return [];
 
             var emojiFolder = Path.Combine(cacheFolder, "emojis", emojiVendor.EmojiFolder());
             if (!Directory.Exists(emojiFolder))
@@ -918,6 +1349,7 @@ namespace TwitchDownloaderCore
 
                     await using var archive = await ZipFile.OpenReadAsync(emojiZipPath, cancellationToken);
                     var emojiAssetsPath = emojiVendor.AssetPath();
+                    var sep = emojiVendor.UnicodeSequenceSeparator();
                     var emojis = archive.Entries
                         .Where(x => !string.IsNullOrWhiteSpace(x.Name)
                                     && Path.GetDirectoryName(x.FullName) is { } dir
@@ -927,7 +1359,7 @@ namespace TwitchDownloaderCore
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
-                        var filePath = Path.Combine(emojiFolder, emoji.Name.ToUpper().Replace(emojiVendor.UnicodeSequenceSeparator(), ' '));
+                        var filePath = Path.Combine(emojiFolder, emoji.Name.ToUpper().Replace(sep, ' '));
                         if (!File.Exists(filePath))
                         {
                             try
@@ -951,7 +1383,19 @@ namespace TwitchDownloaderCore
                 }
             }
 
+            return emojiFiles;
+        }
+
+        public static async Task<Dictionary<string, SKBitmap>> GetEmojis(string cacheFolder, EmojiVendor emojiVendor, ITaskLogger logger, CancellationToken cancellationToken = default)
+        {
+            var returnCache = new Dictionary<string, SKBitmap>();
+
+            if (emojiVendor == EmojiVendor.None)
+                return returnCache;
+
+            var emojiFiles = await GetEmojiFilesAsync(cacheFolder, emojiVendor, cancellationToken);
             var failedToDecode = 0;
+
             foreach (var emojiPath in emojiFiles)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1018,6 +1462,25 @@ namespace TwitchDownloaderCore
                 return bits.Values.ToList();
             }
 
+            // Pre-filter comments that actually spent bits. If none exist in the chat log, skip the network GQL call and regex scanning entirely.
+            List<Comment> bitComments = null;
+            if (comments is not null)
+            {
+                bitComments = new List<Comment>();
+                foreach (var c in comments)
+                {
+                    if (c.message is { bits_spent: > 0, body.Length: > 0 })
+                    {
+                        bitComments.Add(c);
+                    }
+                }
+
+                if (bitComments.Count == 0)
+                {
+                    return bits.Values.ToList();
+                }
+            }
+
             var request = new HttpRequestMessage()
             {
                 RequestUri = new Uri("https://gql.twitch.tv/gql"),
@@ -1050,6 +1513,7 @@ namespace TwitchDownloaderCore
                     }
                 }
 
+                var searchTarget = bitComments ?? comments;
                 foreach (CheerGroup cheerGroup in groupList)
                 {
                     string templateURL = cheerGroup.templateURL;
@@ -1057,9 +1521,7 @@ namespace TwitchDownloaderCore
                     var cheerNodesQuery = from node in cheerGroup.nodes
                         where !bits.ContainsKey(node.prefix)
                         let regex = new Regex($@"(?<=^|\s){Regex.Escape(node.prefix)}(?=[1-9])")
-                        where comments
-                            .Where(comment => comment.message.bits_spent > 0)
-                            .Any(comment => regex.IsMatch(comment.message.body))
+                        where searchTarget == null || searchTarget.Any(comment => regex.IsMatch(comment.message.body))
                         select node;
 
                     foreach (CheerNode node in cheerNodesQuery)
@@ -1067,7 +1529,7 @@ namespace TwitchDownloaderCore
                         string prefix = node.prefix;
                         try
                         {
-                            List<KeyValuePair<int, TwitchEmote>> tierList = new List<KeyValuePair<int, TwitchEmote>>();
+                            List<KeyValuePair<int, TwitchEmote>> tierList = new List<KeyValuePair<int, TwitchEmote>>(node.tiers.Count);
                             CheerEmote newEmote = new CheerEmote() { prefix = prefix, tierList = tierList };
                             foreach (Tier tier in node.tiers)
                             {
@@ -1080,7 +1542,7 @@ namespace TwitchDownloaderCore
                                     .Replace("SCALE.EXTENSION", "2.gif")
                                     .ToString();
 
-                                var (bytes, codec) = await GetImage(bitFolder, url, node.id + tier.bits, 2, "gif", false, logger, cancellationToken);
+                                var (bytes, codec, _) = await GetImageInternalAsync(bitFolder, url, node.id + tier.bits, 2, "gif", false, logger, cancellationToken);
                                 if (bytes is null)
                                 {
                                     continue;
@@ -1119,47 +1581,60 @@ namespace TwitchDownloaderCore
             if (!avatarFolder.Exists)
                 avatarFolder = CreateDirectory(avatarFolder.FullName);
 
-            var avatars = new Dictionary<string, SKBitmap>();
-            foreach (var url in urls)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
+            var urlList = urls.ToList();
+            var decodedAvatars = new SKBitmap[urlList.Count];
 
-                var avatarId = Path.GetFileNameWithoutExtension(url);
-
-                byte[] bytes;
-                SKCodec codec;
-                try
+            await Parallel.ForEachAsync(
+                Enumerable.Range(0, urlList.Count),
+                new ParallelOptions { MaxDegreeOfParallelism = AssetFetchParallelism, CancellationToken = cancellationToken },
+                async (index, ct) =>
                 {
-                    (bytes, codec) = await GetImage(avatarFolder, url, avatarId, 2, "jpg", offline, logger, cancellationToken);
-                }
-                catch (HttpRequestException ex)
-                {
-                    logger.LogVerbose($"Error while fetching {url}: {ex.Message}");
-                    continue;
-                }
+                    var url = urlList[index];
+                    var avatarId = Path.GetFileNameWithoutExtension(url);
 
-                if (bytes is null)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var bitmap = codec is null
-                        ? SKBitmap.Decode(bytes)
-                        : SKBitmap.Decode(codec);
-
-                    if (bitmap is null)
+                    byte[] bytes;
+                    SKCodec codec;
+                    try
                     {
-                        logger.LogWarning($"Skia was unable to decode {avatarId}.");
-                        continue;
+                        (bytes, codec, _) = await GetImageInternalAsync(avatarFolder, url, avatarId, 2, "jpg", offline, logger, ct);
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        logger.LogVerbose($"Error while fetching {url}: {ex.Message}");
+                        return;
                     }
 
-                    avatars.Add(url, bitmap);
-                }
-                finally
+                    if (bytes is null)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        var bitmap = codec is null
+                            ? SKBitmap.Decode(bytes)
+                            : SKBitmap.Decode(codec);
+
+                        if (bitmap is null)
+                        {
+                            logger.LogWarning($"Skia was unable to decode {avatarId}.");
+                            return;
+                        }
+
+                        decodedAvatars[index] = bitmap;
+                    }
+                    finally
+                    {
+                        codec?.Dispose();
+                    }
+                });
+
+            var avatars = new Dictionary<string, SKBitmap>(urlList.Count);
+            for (int i = 0; i < urlList.Count; i++)
+            {
+                if (decodedAvatars[i] is not null)
                 {
-                    codec?.Dispose();
+                    avatars[urlList[i]] = decodedAvatars[i];
                 }
             }
 
@@ -1350,25 +1825,20 @@ namespace TwitchDownloaderCore
             return await response.Content.ReadFromJsonAsync<GqlUserInfoResponse>();
         }
 
-        public static async Task<(byte[], SKCodec)> GetImage(DirectoryInfo cacheDir, string url, string imageId, int imageScale, string imageType, bool offline, ITaskLogger logger, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Internal fast-path image loader that assumes <paramref name="cacheDir"/> has already been created by the caller
+        /// and reports whether the image was satisfied from the local disk cache without redundant File.Exists / DirectoryInfo.Refresh syscalls.
+        /// </summary>
+        private static async Task<(byte[] Bytes, SKCodec Codec, bool WasFromCache)> GetImageInternalAsync(DirectoryInfo cacheDir, string url, string imageId, int imageScale, string imageType, bool offline, ITaskLogger logger, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            cacheDir.Refresh();
-            if (!cacheDir.Exists)
-            {
-                CreateDirectory(cacheDir.FullName);
-                cacheDir.Refresh();
-            }
-
             var filePath = Path.Combine(cacheDir.FullName, $"{imageId}_{imageScale}.{imageType}");
-            var file = new FileInfo(filePath);
-
-            if (file.Exists)
+            if (File.Exists(filePath))
             {
                 try
                 {
-                    var fileBytes = await File.ReadAllBytesAsync(file.FullName, cancellationToken).ConfigureAwait(false);
+                    var fileBytes = await File.ReadAllBytesAsync(filePath, cancellationToken).ConfigureAwait(false);
 
                     if (fileBytes.Length > 0)
                     {
@@ -1377,40 +1847,54 @@ namespace TwitchDownloaderCore
 
                         if (codec is not null)
                         {
-                            return (fileBytes, codec);
+                            return (fileBytes, codec, true);
                         }
 
-                        logger.LogVerbose($"Failed to decode {file.Name} from cache: {result}");
+                        logger.LogVerbose($"Failed to decode {Path.GetFileName(filePath)} from cache: {result}");
                     }
 
                     // Delete the corrupted image
-                    file.Delete();
+                    File.Delete(filePath);
                 }
                 catch (Exception e) when (e is IOException or SecurityException)
                 {
                     // File being written to by parallel process? Maybe. Can just fall back to HTTP request.
-                    logger.LogVerbose($"Failed to read from or delete {file.Name}: {e.Message}");
+                    logger.LogVerbose($"Failed to read from or delete {Path.GetFileName(filePath)}: {e.Message}");
                 }
             }
 
             // Return null if offline
             if (offline)
             {
-                return (null, null);
+                return (null, null, false);
             }
 
             var imageBytes = await httpClient.GetByteArrayAsync(url, cancellationToken).ConfigureAwait(false);
 
             try
             {
-                await File.WriteAllBytesAsync(file.FullName, imageBytes, cancellationToken).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(filePath, imageBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                logger.LogVerbose($"Failed to save {file.Name} to cache: {ex.Message}");
+                logger.LogVerbose($"Failed to save {Path.GetFileName(filePath)} to cache: {ex.Message}");
             }
 
-            return (imageBytes, null);
+            return (imageBytes, null, false);
+        }
+
+        public static async Task<(byte[], SKCodec)> GetImage(DirectoryInfo cacheDir, string url, string imageId, int imageScale, string imageType, bool offline, ITaskLogger logger, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!cacheDir.Exists)
+            {
+                CreateDirectory(cacheDir.FullName);
+                cacheDir.Refresh();
+            }
+
+            var (bytes, codec, _) = await GetImageInternalAsync(cacheDir, url, imageId, imageScale, imageType, offline, logger, cancellationToken).ConfigureAwait(false);
+            return (bytes, codec);
         }
 
         /// <remarks>When a given video has only 1 chapter, data.video.moments.edges will be empty.</remarks>

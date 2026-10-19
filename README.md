@@ -1,275 +1,201 @@
+# ChatRenderCLI
+
 <div align="center">
-  <a href="https://github.com/lay295/TwitchDownloader">
-    <img src="TwitchDownloaderWPF/Images/Logo.png" alt="Logo" width="80" height="80">
-  </a>
-  <h3 align="center">Twitch Downloader</h3>
-  <div align="center">
-    Twitch VOD/Clip/Chat Downloader and Chat Renderer
-    <br />
-    <br />
-    <a href="https://github.com/lay295/TwitchDownloader/issues">Report Bug</a>
-  </div>
+  <h3>High-Performance Standalone Twitch Chat Video Renderer</h3>
+  <p>Render Twitch chat logs into smooth, transparent, or solid video overlays with full support for animated emotes, Giphy GIFs, emojis, and 60+ FPS framerates.</p>
 </div>
 
-This document is also available in:
+---
 
-- [**German / Deutsch**](README_de.md)]
-- [**Italian / Italiano**](README_it.md)
-- [**Japanese / 日本語**](README_ja.md)
-- [**Portuguese (Brazil) / Português (Brasil)**](README_pt-br.md)
-- [**Russian / Русский**](README_ru.md)
-- [**Spanish / Español**](README_es.md)
-- [**Turkish / Türkçe**](README_tr.md)
-- [**Simplified Chinese / 简体中文**](README_zh-cn.md)
-- [**Traditonal Chinese / 繁體中文**](README_zh-tw.md)
-- [**French / Français**](README_fr.md)
+## Overview
 
-## What Can It Do?
+**ChatRenderCLI** is a specialized, hardware-accelerated command-line tool engineered to render Twitch chat logs (`.json` or `.json.gz`) into video files (`.mp4`, `.webm`, `.mov`, etc.). 
 
-- Download Twitch VODs
-- Download Twitch Clips
-- Download chat for VODs and Clips, in either a [JSON with all the original information](https://github.com/lay295/TwitchDownloader/files/13495494/ExampleMoonMoonJsonFile.json), a browser HTML file, or a [plain text file](https://github.com/lay295/TwitchDownloader/files/13495523/ExampleMoonMoonTextFile.txt)
-- Update the contents of a previously generated JSON chat file with an option to save as another format
-- Use a previously generated JSON chat file to render the chat with Twitter Twemoji or Google Noto Color emojis and BTTV, FFZ, 7TV static and animated emotes
+Built on .NET 10, SkiaSharp, and FFmpeg, it features an optimized frame generation pipeline capable of 60 FPS and 120 FPS rendering, zero-allocation frame repeat tracking, dirty-region animation composition, planar YUV conversion, SIMD alpha processing, and embedded Giphy GIF integration with strict memory budgeting.
 
-### Chat Render Example
+Whether you need a **transparent WebM video** for editing chat overlays directly onto VODs in video editors (Wondershare Filmora, Adobe Premiere Pro, DaVinci Resolve), or a solid MP4 for archiving and streaming, ChatRenderCLI renders at maximum efficiency without unnecessary CPU overhead.
 
-<https://user-images.githubusercontent.com/1060681/197653099-c3fd12c2-f03a-4580-84e4-63ce3f36be8d.mp4>
+---
 
-# GUI
+## Key Features
 
-## Windows WPF
+- **Full Emote & Badge Support**:
+  - First-party Twitch emotes and badges (subscriber, moderator, VIP, broadcaster, predictions, etc.).
+  - Third-party animated and static emotes: **7TV** (including unlisted), **BetterTTV (BTTV)**, and **FrankerFaceZ (FFZ)**.
+  - Native color emoji rendering via **Google Noto Color Emoji** or **Twitter Twemoji**.
+- **Giphy GIF Integration**:
+  - Automatically renders bracketed Giphy GIFs posted in chat (e.g., `[Horse Stare GIF by Jan Metternich]`).
+  - Fetches and caches resolutions locally, or reads pre-embedded GIF data from the chat JSON.
+  - Configurable maximum height percent (`--gif-max-height-percent`) and LRU frame memory budget (`--image-cache-mb`).
+- **High-Performance 60 FPS & 120 FPS Engine**:
+  - **Parallel Timeline Partitioning (`-j` / `--jobs`)**: Automatically partitions the timeline into concurrent encoding segments across multiple FFmpeg workers and stitches them losslessly via FFmpeg's stream-copy concat demuxer (`-f concat -c copy`), overcoming single-encoder VP9/ProRes CPU bottlenecks and achieving 2x–3x faster renders on multi-core CPUs.
+  - **Zero-Allocation Frame Repeat Tracking**: Chat idling between scroll and animation ticks bypasses buffer copies and increments frame counters.
+  - **Incremental Scroll Shifting**: When chat advances, existing pixels are shifted upward in memory, rasterizing only new comments.
+  - **Dirty-Rect Emote Patching**: Only active bounding boxes of animated emotes that stepped forward on the current tick are recomposed.
+  - **O(1) Next-Transition Short-Circuiting**: Instantly skips emote scans when no emote frames are scheduled to change on the current tick.
+  - **Hardware-Direct Planar YUV Pipeline**: Directly produces planar `yuv420p` or `yuva420p` streams with 64-bit uniform block acceleration, cutting rawvideo pipe bandwidth by 37.5%–62.5% and eliminating redundant FFmpeg `swscale` per-tick conversions.
+  - **SIMD Mask Extraction**: SSE2/SSSE3/AVX2 and ARM64 AdvSimd vectorization for instant alpha-mask extraction.
+- **Transparent Video & Alpha Channel Support**:
+  - Native **WebM VP9 Alpha** (`-pix_fmt yuva420p` via `libvpx-vp9`) with automatic multithreading (`-row-mt 1`, `-cpu-used 8`, dynamic GOP scaling, and multi-process segment encoding).
+  - Apple **ProRes 4444** (`prores_ks` with `yuva444p10le`) and QuickTime Animation (`qtrle`).
+  - Dual-output **Alpha Mask Generation** (`--generate-mask`) for standard H.264 editors that don't support transparent video tracks.
+- **Built-in Typography & Font Mapping**:
+  - Embedded high-legibility **Inter** typeface built directly into the binary.
+  - Smart font fallback: Passing `--font Inter` automatically uses the embedded Inter typeface unless installed natively on the host OS.
+- **Large Archive Streaming**:
+  - Stream-based JSON deserialization handles multi-gigabyte (`>2 GB`) chat logs and compressed `.json.gz` archives without out-of-memory errors.
+- **Zero External Dependencies**:
+  - Downloadable as a single, self-contained Windows executable (`ChatRenderCLI.exe`). Does not require .NET installed on the host machine.
+  - Built-in standalone FFmpeg downloader (`ChatRenderCLI.exe ffmpeg -d`).
 
-![](https://i.imgur.com/bLegxGX.gif)
+---
 
-### [See the full WPF documentation here](TwitchDownloaderWPF/README.md)
+## Quickstart
 
-### Functionality
+### 1. Download or Build
+Download `ChatRenderCLI.exe` from the Releases page, or build it locally using the provided one-click scripts:
+- **Windows Command Prompt**: `build-win-x64.bat`
+- **Windows PowerShell**: `./build-win-x64.ps1`
 
-The Windows WPF GUI implements all of the main functions of the program along with some extra quality of life functions:
+### 2. Ensure FFmpeg is Available
+ChatRenderCLI uses FFmpeg to encode the video stream. If FFmpeg is not already on your system PATH:
+```cmd
+ChatRenderCLI.exe ffmpeg -d
+```
+This downloads a portable `ffmpeg.exe` binary into the working directory automatically.
 
-- Queue up multiple download/render jobs to run simultaneously
-- Create a list of download jobs from a list of vod/clip links
-- Search for and download multiple VODs/clips from any streamer without leaving the app
-
-### Multi-language Support
-
-The Windows WPF GUI is available in multiple languages thanks to community translations. See the [Localization section](TwitchDownloaderWPF/README.md#localization) of the [WPF README](TwitchDownloaderWPF/README.md) for more details.
-
-### Theming
-
-The Windows WPF GUI comes bundled with both light and dark themes, along with an option to update live according the current Windows theme. It also supports user created themes! See the [Theming section](TwitchDownloaderWPF/README.md#theming) of the [WPF README](TwitchDownloaderWPF/README.md) for more details.
-
-### Video Demonstration
-
-<https://www.youtube.com/watch?v=0W3MhfhnYjk>
-(older version, same concept)
-
-## Linux?
-
-Check twitch-downloader-gui on [github](https://github.com/mohad12211/twitch-downloader-gui) or on the [AUR](https://aur.archlinux.org/packages/twitch-downloader-gui) for a Linux GUI wrapper for the CLI.
-
-## MacOS?
-
-No GUI is available for MacOS yet :(
-
-# CLI
-
-### [See the full CLI documentation here](TwitchDownloaderCLI/README.md)
-
-The CLI is cross-platform and implements the main functions of the program. It works on Windows, Linux, and MacOS<sup>*</sup>.
-
-<sup>*Only Intel Macs have been tested</sup>
-
-With the CLI, it is possible to automate video processing using external scripts. For example, you could copy-paste the following code into a `.bat` file on Windows to download a VOD and its chat, and then render the chat, all from a single input.
-
-```bat
-@echo off
-set /p vodid="Enter VOD ID: "
-TwitchDownloaderCLI.exe videodownload --id %vodid% --ffmpeg-path "ffmpeg.exe" -o %vodid%.mp4
-TwitchDownloaderCLI.exe chatdownload --id %vodid% -o %vodid%_chat.json -E
-TwitchDownloaderCLI.exe chatrender -i %vodid%_chat.json -h 1080 -w 422 --framerate 30 --update-rate 0 --font-size 18 -o %vodid%_chat.mp4
+### 3. Render a Chat File
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4
 ```
 
-## Windows - Getting started
+> **Tip**: You can run ChatRenderCLI either with the verb (`chatrender`) or without it. When omitted, `chatrender` is assumed automatically.
 
-1. Go to [Releases](https://github.com/lay295/TwitchDownloader/releases/) and download the latest version for Windows or [build from source](#building-from-source).
-2. Extract `TwitchDownloaderCLI.exe`.
-3. Browse to where you extracted the executable:
+---
 
+## Common Workflows & Examples
+
+### 1. Transparent WebM Video for Video Editing (Filmora, Premiere, DaVinci)
+Renders a 60 FPS transparent video overlay where the background is completely transparent. Perfect for overlaying directly onto gameplay/VOD tracks:
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.webm -w 420 -h 1080 --framerate 60 --background-color "#00000000" --output-args "-c:v libvpx-vp9 -crf 18 -b:v 0 -pix_fmt yuva420p \"{save_path}\""
 ```
-cd C:\folder\containing\TwitchDownloaderCLI
-```
+*Note: ChatRenderCLI automatically detects `libvpx-vp9` with `yuva420p` and optimizes threading (`-row-mt 1`, `-cpu-used 4`), frame lookahead, pipe buffer size, and GOP length (`-g <fps*8>`) for optimal performance and timeline scrubbing.*
 
-4. If you do not have FFmpeg, you can install it via [Chocolatey package manager](https://community.chocolatey.org/), or you can get it as a standalone file from [ffmpeg.org](https://ffmpeg.org/download.html) or by using TwitchDownloaderCLI:
-
-```
-TwitchDownloaderCLI.exe ffmpeg --download
-```
-
-5. You can now start using TwitchDownloaderCLI, for example:
-
-```
-TwitchDownloaderCLI.exe videodownload --id <vod-id-here> -o out.mp4
+### 2. High-Performance 60 FPS Solid MP4 (H.264)
+Renders a smooth 60 FPS chat video with an outline around messages:
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60 --update-rate 0.2 --outline
 ```
 
-You can find more example commands in the [CLI README](TwitchDownloaderCLI/README.md#example-commands).
-
-## Linux – Getting started
-
-1. Some distros, like Linux Alpine, lack fonts for some languages (Arabic, Persian, Thai, etc.) If this is the case for you, install additional fonts families such as [Noto](https://fonts.google.com/noto/specimen/Noto+Sans) or check your distro's wiki page on fonts as it may have an install command for this specific scenario, such as the [Linux Alpine](https://wiki.alpinelinux.org/wiki/Fonts) font page.
-2. Ensure both `fontconfig` and `libfontconfig1` are installed. `apt-get install fontconfig libfontconfig1` on Ubuntu.
-3. Go to [Releases](https://github.com/lay295/TwitchDownloader/releases/) and download the latest binary for Linux, grab the [AUR Package](https://aur.archlinux.org/packages/twitch-downloader-bin/) for Arch Linux, or [build from source](#building-from-source).
-4. Extract `TwitchDownloaderCLI`.
-5. Browse to where you extracted the binary:
-
-```
-cd directory/containing/TwitchDownloaderCLI
+### 3. Transparent Chat with Separate Alpha Mask File
+For video editors that do not import WebM alpha channels, generate an H.264 chat video and a synchronized grayscale mask video (`chat_mask.mp4`):
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 400 -h 900 --generate-mask
 ```
 
-6. Give the binary executable rights:
-
-```
-sudo chmod +x TwitchDownloaderCLI
-```
-
-7. a) If you do not have FFmpeg, you should install it system-wide via your distro package manager, however you can also get it as a standalone file from [ffmpeg.org](https://ffmpeg.org/download.html) or by using TwitchDownloaderCLI:
-
-```
-./TwitchDownloaderCLI ffmpeg --download
+### 4. Custom Styling (Dark Theme, Alternating Rows, Custom Font Size)
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 450 -h 1080 --background-color "#121214" --alt-background-color "#18181b" --alternate-backgrounds --font "Inter" --font-size 15 --framerate 60
 ```
 
-7. b) If downloaded as a standalone file, you must also give it executable rights with:
-
+### 5. Filter Moderation (Ignore Bots, Banned Words, Specific Badges)
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 --ignore-users "Nightbot,StreamElements" --ban-words "spambot,freefollowers" --badge-filter 6
 ```
-sudo chmod +x ffmpeg
-```
+*(Badge filter `6` hides Broadcaster and Moderator badges; see [CLI documentation](TwitchDownloaderCLI/README.md#badge-filtering) for filter bitmasks).*
 
-8. You can now start using TwitchDownloaderCLI, for example:
-
-```
-./TwitchDownloaderCLI videodownload --id <vod-id-here> -o out.mp4
-```
-
-You can find more example commands in the [CLI README](TwitchDownloaderCLI/README.md#example-commands).
-
-## MacOS – Getting started
-
-1. If your device has an Apple Silicon M-series processor, ensure that you download the arm64 binary, however if you would like to use the x64 binary on Apple Silicon it must be run via a terminal session running under Rosetta 2:
-
-```
-arch -x86_64 zsh
+### 6. Completely Offline Render
+Render using only the emotes, badges, and GIFs already embedded in the JSON archive:
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 --offline
 ```
 
-2. Go to [Releases](https://github.com/lay295/TwitchDownloader/releases/) and download the latest binary for MacOS or [build from source](#building-from-source).
-3. Extract `TwitchDownloaderCLI`.
-4. Browse to where you extracted the binary:
+---
 
-```
-cd directory/containing/TwitchDownloaderCLI
-```
+## Command-Line Interface Reference
 
-5. Give the binary executable rights in the terminal:
+ChatRenderCLI supports three execution modes:
+- **`chatrender`** (default): Renders a chat JSON or compressed archive to video.
+- **`ffmpeg`**: Downloads or manages a standalone FFmpeg executable.
+- **`cache`**: Manages and clears cached emotes, badges, and Giphy thumbnails.
 
-```
-chmod +x TwitchDownloaderCLI
-```
+For the complete list of options, flags, scaling arguments, and technical details:
+👉 **[Read the Full CLI Documentation](TwitchDownloaderCLI/README.md)**
 
-6. a) If you do not have FFmpeg, you can install it system-wide via the [Homebrew package manager](https://brew.sh/), or you can get it as a standalone file from [ffmpeg.org](https://ffmpeg.org/download.html) or by using TwitchDownloaderCLI:
+---
 
-```
-./TwitchDownloaderCLI ffmpeg --download
-```
+## Platform Support & Prerequisites
 
-6. b) If downloaded as a standalone file, you must also give it executable rights with:
+### Windows
+- Windows 10/11 (x64 / ARM64).
+- FFmpeg on PATH or downloaded with `ChatRenderCLI.exe ffmpeg -d`.
 
-```
-chmod +x ffmpeg
-```
+### Linux
+- Ensure `fontconfig` and `libfontconfig1` are installed:
+  ```bash
+  sudo apt-get install fontconfig libfontconfig1
+  ```
+- If rendering non-Latin alphabets (Arabic, Japanese, Thai, etc.), install comprehensive font packages such as [Google Noto Fonts](https://fonts.google.com/noto).
 
-7. You can now start using TwitchDownloaderCLI, for example:
+### macOS
+- Compatible with macOS 12+ (x64 and Apple Silicon arm64).
+- Install FFmpeg via Homebrew:
+  ```bash
+  brew install ffmpeg
+  ```
 
-```
-./TwitchDownloaderCLI videodownload --id <vod-id-here> -o out.mp4
-```
+---
 
-You can find more example commands in the [CLI README](TwitchDownloaderCLI/README.md#example-commands).
+## Building From Source
 
-# Building from source
+### Requirements
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (`10.0.100` or newer)
 
-## Requirements
-
-- [.NET 10.0.x SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
-- About 1GB of disk space
-
-## Build Instructions
-
-1. Clone the repository:
-
-```
-git clone https://github.com/lay295/TwitchDownloader.git
-```
-
-2. Navigate to the solution folder:
-
-```
-cd TwitchDownloader
-```
-
-3. Restore the solution:
-
-```
-dotnet restore
+### Build Commands
+To produce a self-contained single-file executable for Windows x64:
+```bash
+dotnet publish TwitchDownloaderCLI/TwitchDownloaderCLI.csproj \
+  -c Release \
+  -r win-x64 \
+  --self-contained true \
+  -p:PublishSingleFile=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true \
+  -p:DebugType=Embedded \
+  -o ./publish
 ```
 
-- Non-Windows devices may need to explicitly specify a project to restore, i.e. `dotnet restore TwitchDownloaderCLI`
-
-4. a) Build the GUI:
-
-```
-dotnet publish TwitchDownloaderWPF -p:PublishProfile=Windows
-```
-
-4. b) Build the CLI:
-
-```
-dotnet publish TwitchDownloaderCLI -p:PublishProfile=<Profile>
+Or build for Linux x64:
+```bash
+dotnet publish TwitchDownloaderCLI/TwitchDownloaderCLI.csproj \
+  -c Release \
+  -r linux-x64 \
+  --self-contained true \
+  -p:PublishSingleFile=true \
+  -o ./publish
 ```
 
-- Applicable Profiles: `Windows`, `Linux`, `LinuxAlpine`, `LinuxArm`, `LinuxArm64`, `MacOS`, `MacOSArm64`
-
-5. a) Navigate to the GUI build folder:
-
-```
-cd TwitchDownloaderWPF/bin/Release/net10.0-windows/publish/win-x64
+To run all unit tests:
+```bash
+dotnet test ChatRenderCLI.sln
 ```
 
-5. b) Navigate to the CLI build folder:
+Detailed compilation instructions and CI workflow details are available in [BUILD_GUIDE.md](BUILD_GUIDE.md).
 
-```
-cd TwitchDownloaderCLI/bin/Release/net10.0/publish
-```
+---
 
-# Third Party Credits
+## Third-Party Credits & Licenses
 
-Chat Renders are rendered with [SkiaSharp](https://github.com/mono/SkiaSharp) and [HarfBuzzSharp](https://github.com/mono/SkiaSharp) © Microsoft Corporation.
+- **SkiaSharp & HarfBuzzSharp** (© Microsoft Corporation, Google LLC) — High-performance 2D rasterization and complex text layout.
+- **FFmpeg** (© The FFmpeg developers) — Video muxing, scaling, and codec encoding.
+- **Noto Color Emoji** (© Google LLC and contributors) — High-quality color emoji font.
+- **Twemoji** (© Twitter, Inc. and contributors) — Vector emoji assets.
+- **Inter Font Family** (© Rasmus Andersson) — Modern UI typeface bundled directly into the executable.
+- **Xabe.FFmpeg.Downloader** (© Tomasz Żmuda) — Automated runtime FFmpeg retrieval.
 
-Chat Renders are encoded and Video Downloads are finalized with [FFmpeg](https://ffmpeg.org/) © The FFmpeg developers.
+Full license texts are available in [LICENSE.txt](LICENSE.txt) and `TwitchDownloaderCore/Resources/THIRD-PARTY-LICENSES.txt`.
 
-Chat Renders may use [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) © Google and contributors.
+---
 
-Chat Renders may use [Twemoji](https://github.com/jdecked/twemoji) © Twitter and contributors.
-
-Bundled FFmpeg binaries are fetched from [gyan.dev](https://www.gyan.dev/ffmpeg/) © Gyan Doshi.
-
-FFmpeg binaries fetched are runtime are downloaded using [Xabe.FFmpeg.Downloader](https://github.com/tomaszzmuda/Xabe.FFmpeg) © Xabe.
-
-Chat HTML exports utilize the _Inter_ typeface hosted by the [Google Fonts API](https://fonts.google.com/) © Google.
-
-For a full list of utilized external libraries, see [THIRD-PARTY-LICENSES.txt](./TwitchDownloaderCore/Resources/THIRD-PARTY-LICENSES.txt).
-
-# License
-
-[MIT](./LICENSE.txt)
-
-TwitchDownloader is in no way associated with Twitch Interactive, Inc. or its affiliates.
+## Disclaimer
+TwitchDownloader / ChatRenderCLI is an independent open-source project and is not affiliated with, endorsed by, or associated with Twitch Interactive, Inc., Amazon.com, or GIPHY.

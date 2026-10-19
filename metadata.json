@@ -1,0 +1,5 @@
+{
+  "name": "ChatRenderCLI",
+  "description": "Standalone Twitch Chat Render CLI extracted from TwitchDownloader (giphy_emotes_v1).",
+  "requestFramePermissions": []
+}

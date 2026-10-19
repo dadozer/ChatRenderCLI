@@ -1,522 +1,500 @@
-# TwitchDownloaderCLI
-A cross platform command line tool that can do the main functions of the GUI program, which can download VODs/Clips/Chats and render chats.
-Also can concatenate/combine/merge Transport Stream files, either those parts downloaded with the CLI itself or from another source.
+# ChatRenderCLI Reference Manual
 
-- [TwitchDownloaderCLI](#twitchdownloadercli)
-  - [Global arguments](#global-arguments)
-  - [Arguments for mode videodownload](#arguments-for-mode-videodownload)
-  - [Arguments for mode clipdownload](#arguments-for-mode-clipdownload)
-  - [Arguments for mode chatdownload](#arguments-for-mode-chatdownload)
-  - [Arguments for mode chatupdate](#arguments-for-mode-chatupdate)
-  - [Arguments for mode chatrender](#arguments-for-mode-chatrender)
-  - [Arguments for mode info](#arguments-for-mode-info)
-  - [Arguments for mode ffmpeg](#arguments-for-mode-ffmpeg)
-  - [Arguments for mode cache](#arguments-for-mode-cache)
-  - [Arguments for mode update](#arguments-for-mode-update)
-  - [Arguments for mode tsmerge](#arguments-for-mode-tsmerge)
-  - [Example Commands](#example-commands)
-  - [Additional Notes](#additional-notes)
-    - [ID parsing](#id-parsing)
-    - [String arguments](#string-arguments)
-    - [Boolean flags](#boolean-flags)
-    - [Enum flag arguments](#enum-flag-arguments)
-    - [Time durations](#time-durations)
-    - [Rendering prerequisites](#rendering-prerequisites)
-    - [TSMerge notes](#tsmerge-notes)
+A high-performance command-line tool engineered to render Twitch chat logs (`.json` or `.json.gz`) into video files (`.mp4`, `.webm`, `.mov`, etc.) with full animated emote support, Giphy GIFs, native emoji rendering, and hardware-accelerated 60+ FPS pipelines.
 
 ---
 
-## Global arguments
-#### Common arguments shared between all the modes
+## Table of Contents
+
+- [Overview & Invocation Syntax](#overview--invocation-syntax)
+- [Global Arguments](#global-arguments)
+- [Mode: `chatrender`](#mode-chatrender)
+  - [Input & Output](#input--output)
+  - [Dimensions & Trimming](#dimensions--trimming)
+  - [Framerate & Animation Timing](#framerate--animation-timing)
+  - [Colors & Appearance](#colors--appearance)
+  - [Typography & Fonts](#typography--fonts)
+  - [Emotes, Badges & Giphy GIFs](#emotes-badges--giphy-gifs)
+  - [Fine-Grained Layout & Element Scaling](#fine-grained-layout--element-scaling)
+  - [Chat Moderation & Filtering](#chat-moderation--filtering)
+  - [FFmpeg & Video Encoding Arguments](#ffmpeg--video-encoding-arguments)
+  - [System & Temporary Paths](#system--temporary-paths)
+- [Mode: `ffmpeg`](#mode-ffmpeg)
+- [Mode: `cache`](#mode-cache)
+- [Video Production Guides](#video-production-guides)
+  - [1. Transparent WebM VP9 Alpha (Filmora, Premiere, DaVinci, OBS)](#1-transparent-webm-vp9-alpha-filmora-premiere-davinci-obs)
+  - [2. Apple ProRes 4444 Transparent MOV](#2-apple-prores-4444-transparent-mov)
+  - [3. Dual-Stream Alpha Masking (--generate-mask)](#3-dual-stream-alpha-masking---generate-mask)
+  - [4. High Frame Rate (60 & 120 FPS) Rendering](#4-high-frame-rate-60--120-fps-rendering)
+  - [5. Embedded Giphy GIFs & Memory Management](#5-embedded-giphy-gifs--memory-management)
+- [Example Commands](#example-commands)
+- [Technical Reference](#technical-reference)
+  - [Time Duration Syntax](#time-duration-syntax)
+  - [Color Hex Formats](#color-hex-formats)
+  - [Badge Filter Bitmask](#badge-filter-bitmask)
+  - [Log Level Flags](#log-level-flags)
+  - [File Collision Modes](#file-collision-modes)
+
+---
+
+## Overview & Invocation Syntax
+
+ChatRenderCLI supports three execution verbs:
+1. **`chatrender`**: Renders chat logs into video.
+2. **`ffmpeg`**: Downloads or verifies standalone FFmpeg.
+3. **`cache`**: Manages and clears cached emotes, badges, and GIF resolutions.
+
+### Direct Invocation (No Verb Required)
+Because rendering is the primary operation, ChatRenderCLI automatically assumes `chatrender` if the first argument is not a known verb. Both of the following commands are completely identical:
+
+```cmd
+ChatRenderCLI.exe chatrender -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60
+```
+
+---
+
+## Global Arguments
+Arguments available across all modes.
+
+#### `--banner`
+- **Type**: `bool` (Default: `true`)
+- Displays application version, copyright, and target runtime info at startup. Disable with `--banner=false`.
+
+#### `--log-level`
+- **Type**: `EnumFlags` (Default: `Status,Info,Warning,Error`)
+- Controls terminal output verbosity. Applicable values: `None`, `Status`, `Verbose`, `Info`, `Warning`, `Error`, `Ffmpeg`.
+- Passing `None` suppresses all logging and implies `--banner=false`. See [Log Level Flags](#log-level-flags) for combining flags.
+
+---
+
+## Mode: `chatrender`
+
+### Input & Output
+
+#### `-i` / `--input` *(REQUIRED)*
+- **Type**: `string`
+- Absolute or relative path to the source chat log.
+- Accepts standard `.json` files or gzip-compressed `.json.gz` archives. Large chat logs (>2 GB) automatically use the streaming deserializer.
+
+#### `-o` / `--output` *(REQUIRED)*
+- **Type**: `string`
+- Destination path for the rendered video (e.g., `chat.mp4`, `chat.webm`, `chat.mov`).
+
+#### `--collision`
+- **Type**: `enum` (Default: `Prompt`)
+- Action to take if the output file already exists. Valid values:
+  - `Prompt`: Ask user via terminal whether to overwrite.
+  - `Overwrite`: Replace the existing file without asking.
+  - `Rename`: Append an incremental number (e.g., `chat (1).mp4`).
+  - `Exit`: Immediately terminate without overwriting.
+
+---
+
+### Dimensions & Trimming
+
+#### `-w` / `--chat-width`
+- **Type**: `int` (Default: `350`)
+- Width of the rendered video frame in pixels. Must be an even number when using YUV codecs.
+
+#### `-h` / `--chat-height`
+- **Type**: `int` (Default: `600`)
+- Height of the rendered video frame in pixels. Must be an even number when using YUV codecs.
+
+#### `-b` / `--beginning`
+- **Type**: `TimeDuration` (Default: `-1`, no trim)
+- Trims the render to start at a specified offset relative to the beginning of the chat log. See [Time Duration Syntax](#time-duration-syntax).
+
+#### `-e` / `--ending`
+- **Type**: `TimeDuration` (Default: `-1`, no trim)
+- Trims the render to stop at a specified offset relative to the beginning of the chat log. See [Time Duration Syntax](#time-duration-syntax).
 
-**--banner**
-(Default: `true`) Displays a banner containing version and copyright information.
+#### `--dispersion`
+- **Type**: `bool` (Default: `false`)
+- In late 2022, Twitch API timestamps began truncating chat messages to whole seconds. Enabling `--dispersion` uses sub-second comment metadata to disperse message timestamps across the second they were sent. Requires `--update-rate` < 1.0.
 
-**--log-level**
-(Default: `Status,Info,Warning,Error`) Sets the log level flags. Applicable values are: `None`, `Status`, `Verbose`, `Info`, `Warning`, `Error`, `Ffmpeg`. When `None` is passed, any other log level flags are ignored and `--banner=false` is implied. See [Enum flags](#enum-flag-arguments) for more help.
+---
 
-## Arguments for mode videodownload
-#### Downloads a stream VOD or highlight from Twitch
+### Framerate & Animation Timing
 
-**-u / --id (REQUIRED)**
-The ID or URL of the VOD to download.
+#### `--framerate`
+- **Type**: `int` (Default: `30`)
+- Video output framerate in frames per second (FPS). Common values: `30`, `60`, `120`.
+- At high framerates (60+ FPS), the engine's zero-allocation repeat counting, dirty-region emote patching, and O(1) next-transition short-circuiting prevent CPU waste on unchanged ticks.
 
-**-o / --output (REQUIRED)**
-File the program will output to. File extension will be used to determine download type. Valid extensions are: `.mp4` and `.m4a`.
+#### `--update-rate`
+- **Type**: `double` (Default: `0.2`)
+- Time interval in seconds between chat scroll updates. For example, `0.2` updates the chat scroll position every 200 milliseconds (every 12 ticks at 60 FPS).
+- Lower values result in smoother, more continuous chat scrolling; higher values create stepping/chunked scrolling.
 
-**-q / --quality**
-The quality that the program will attempt to download, for example "1080p60". If not found, the highest quality stream will be downloaded.
+#### `--sharpening`
+- **Type**: `bool` (Default: `false`)
+- Appends FFmpeg `smartblur` sharpening (`smartblur=lr=1:ls=-1.0`). Recommended primarily for high-resolution renders (`font-size` 24+).
 
-**-b / --beginning**
-Time to trim beginning. See [Time durations](#time-durations) for a more detailed explanation.
+#### `--generate-mask`
+- **Type**: `bool` (Default: `false`)
+- In addition to the primary video output, generates a synchronized black-and-white alpha mask video (`<name>_mask.<ext>`). White pixels represent chat content; black pixels represent transparency. Vectorized via AVX2 / SSSE3 / AdvSimd SIMD intrinsics.
 
-**-e / --ending**
-Time to trim ending. See [Time durations](#time-durations) for a more detailed explanation.
+#### `--skip-drive-waiting`
+- **Type**: `bool` (Default: `false`)
+- Disables output drive synchronization waits between frame dispatches. Can increase render speed by 1–5% on NVMe SSDs and fast local drives.
 
-**-t / --threads**
-(Default: `4`) Number of parallel download threads. Large values may result in IP rate limiting.
+#### `-j` / `--jobs`
+- **Type**: `int` (Default: `0`, auto-scale)
+- Number of parallel FFmpeg encoding segments to run concurrently.
+- **`0` (Auto)**: Automatically scales based on CPU core count, video duration, and codec (up to `4` parallel segments on 16+ core CPUs for dual-plane `yuva420p` / `--generate-mask` renders, or up to `3` for standard renders). Videos under 60 seconds automatically use a single segment (`1`).
+- **`1`**: Forces single-stream sequential encoding (no temporary segment files).
+- **`2`–`16`**: Explicitly partitions the video timeline into `N` equal tick segments encoded in parallel and stitched losslessly via `ffmpeg -f concat -c copy` at completion.
 
-**--bandwidth**
-(Default: `-1`) The maximum bandwidth a thread will be allowed to use in kibibytes per second (KiB/s), or `-1` for no maximum.
+---
 
-**--trim-mode**
-(Default: `Exact`) Sets the video trim handling. Videos trimmed with exact trim may rarely experience video/audio stuttering within the first/last few seconds. Safe trimming is guaranteed to not stutter but may result in a slightly longer video. Valid values are: `Safe`, `Exact`.
+### Colors & Appearance
 
-**--oauth**
-OAuth access token to download subscriber only VODs. <ins>**DO NOT SHARE YOUR OAUTH TOKEN WITH ANYONE.**</ins>
+#### `--background-color`
+- **Type**: `string` (Default: `#111111`)
+- Base background color in `#RRGGBB` or `#AARRGGBB` hex format.
+- Set to `#00000000` (or `rgba(0,0,0,0)`) for fully transparent video backgrounds.
 
-**--ffmpeg-path**
-Path to FFmpeg executable.
+#### `--alt-background-color`
+- **Type**: `string` (Default: `#191919`)
+- Alternate message background color when `--alternate-backgrounds` is enabled. Accepts `#RRGGBB` or `#AARRGGBB`.
 
-**--temp-path**
-Path to temporary folder for cache.
+#### `--highlight-user-color`
+- **Type**: `string` (Default: `#C8FF0059`)
+- Background tint color applied behind messages sent by users specified in `--highlight-users`. Accepts `#RRGGBB` or `#AARRGGBB`.
 
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
+#### `--message-color`
+- **Type**: `string` (Default: `#ffffff`)
+- Default text color for chat message text in `#RRGGBB` or `#AARRGGBB`.
 
-## Arguments for mode clipdownload
-#### Downloads a clip from Twitch
+#### `--alternate-backgrounds`
+- **Type**: `bool` (Default: `false`)
+- Alternates the background color of every other chat comment using `--alt-background-color` to enhance readability.
 
-**-u / --id (REQUIRED)**
-The ID or URL of the Clip to download.
+#### `--readable-colors`
+- **Type**: `bool` (Default: `true`)
+- Automatically adjusts username contrast against dark/light backgrounds to ensure WCAG readability guidelines are met.
 
-**-o / --output (REQUIRED)**
-File the program will output to.
+#### `--outline`
+- **Type**: `bool` (Default: `false`)
+- Draws a distinct solid outline around rendered text and messages, ideal for transparent overlays placed on bright or complex video backgrounds.
 
-**-q / --quality**
-The quality that the program will attempt to download, for example "1080p60". If not found, the highest quality video will be downloaded.
+#### `--outline-size`
+- **Type**: `double` (Default: `4`)
+- Stroke thickness in pixels when `--outline` is enabled.
 
-**--bandwidth**
-(Default: `-1`) The maximum bandwidth the clip downloader is allowed to use in kibibytes per second (KiB/s), or `-1` for no maximum.
+---
 
-**--encode-metadata**
-(Default: `true`) Uses FFmpeg to add metadata to the clip output file.
+### Typography & Fonts
 
-**--ffmpeg-path**
-Path to FFmpeg executable.
+#### `-f` / `--font`
+- **Type**: `string` (Default: `Inter Embedded`)
+- Font family to use for rendering chat text.
+- **Embedded Inter Font Mapping**: ChatRenderCLI bundles the complete **Inter** font family internally. Specifying `--font Inter` or `--font "Inter Embedded"` will automatically use the high-legibility embedded Inter typeface unless a local "Inter" font family is installed on the host operating system.
 
-**--temp-path**
-Path to temporary folder for cache.
+#### `--font-size`
+- **Type**: `double` (Default: `12`)
+- Base font size in points for chat messages.
 
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
+#### `--message-fontstyle`
+- **Type**: `string` (Default: `normal`)
+- Font weight/style for message text. Options: `normal`, `bold`, `italic`, `bolditalic`.
 
-## Arguments for mode chatdownload
-#### Downloads the chat of a VOD, highlight, or clip
+#### `--username-fontstyle`
+- **Type**: `string` (Default: `bold`)
+- Font weight/style for chat usernames. Options: `normal`, `bold`, `italic`, `bolditalic`.
 
-**-u / --id (REQUIRED)**
-The ID or URL of the VOD or clip to download.
+#### `--scale-username`
+- **Type**: `double` (Default: `1.0`)
+- Multiplier to scale username font size relative to the base `--font-size`.
 
-**-o / --output (REQUIRED)**
-File the program will output to. File extension will be used to determine download type. Valid extensions are: `.json`, `.html`, and `.txt`.
+---
 
-**--compression**
-(Default: `None`) Compresses an output json chat file using a specified compression, usually resulting in 40-90% size reductions. Valid values are: `None`, `Gzip`. More formats will be supported in the future.
+### Emotes, Badges & Giphy GIFs
 
-**-b / --beginning**
-Time to trim beginning. See [Time durations](#time-durations) for a more detailed explanation.
+#### `--bttv`
+- **Type**: `bool` (Default: `true`)
+- Enables BetterTTV (BTTV) static and animated emotes. Disable with `--bttv=false`.
 
-**-e / --ending**
-Time to trim ending. See [Time durations](#time-durations) for a more detailed explanation.
+#### `--ffz`
+- **Type**: `bool` (Default: `true`)
+- Enables FrankerFaceZ (FFZ) static and animated emotes. Disable with `--ffz=false`.
 
-**-E / --embed-images**
-(Default: `false`) Embed first party emotes, badges, and cheermotes into the download file for offline rendering. Useful for archival purposes, file size will be larger.
+#### `--stv`
+- **Type**: `bool` (Default: `true`)
+- Enables 7TV static and animated emotes. Disable with `--stv=false`.
 
-**--bttv**
-(Default: `true`) BTTV emote embedding. Requires `-E / --embed-images`.
+#### `--allow-unlisted-emotes`
+- **Type**: `bool` (Default: `true`)
+- Allows unlisted 7TV emotes to be fetched and rendered.
 
-**--ffz**
-(Default: `true`) FFZ emote embedding. Requires `-E / --embed-images`.
+#### `--giphy`
+- **Type**: `bool` (Default: `true`)
+- Enables rendering of embedded or linked Giphy GIFs posted in Twitch chat (e.g., `[Horse Stare GIF by Jan Metternich]`). GIFs are displayed full-width below the username.
 
-**--stv**
-(Default: `true`) 7TV emote embedding. Requires `-E / --embed-images`.
+#### `--gif-max-height-percent`
+- **Type**: `int` (Default: `50`)
+- Caps the rendered height of a GIF as a percentage of the total `--chat-height`. A value of `50` ensures a GIF never occupies more than half of the visible chat window; `100` allows full-height GIFs.
 
-**--timestamp-format**
-(Default: `Relative`) Sets the timestamp format for .txt chat logs. Valid values are: `Utc`, `UtcFull`, `Relative`, and `None`.
+#### `--image-cache-mb`
+- **Type**: `int` (Default: `256`)
+- Memory budget in megabytes for caching decoded off-screen emote and GIF frames. Active on-screen frames are always retained. Off-screen frames are evicted via an LRU policy when the budget is reached.
 
-**-t / --threads**
-(Default: `4`) Number of parallel download threads. Large values may result in IP rate limiting.
+#### `--sub-messages`
+- **Type**: `bool` (Default: `true`)
+- Enables rendering of subscription and re-subscription announcement notices and highlight bars.
 
-**--temp-path**
-Path to temporary folder for cache.
+#### `--badges`
+- **Type**: `bool` (Default: `true`)
+- Enables rendering of user badges (Subscriber, Moderator, VIP, Turbo, Bits, etc.).
 
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
+#### `--badge-filter`
+- **Type**: `int` (Default: `0`)
+- Bitmask integer to filter out specific badge types. See [Badge Filter Bitmask](#badge-filter-bitmask) for calculation details.
 
-## Arguments for mode chatupdate
-#### Updates the embedded emotes, badges, bits, and trims a chat JSON and/or converts a JSON chat to another format
+#### `--avatars`
+- **Type**: `bool` (Default: `false`)
+- Renders user profile avatars to the left of badges and usernames.
 
-**-i / --input (REQUIRED)**
-Path to input file. Valid extensions are: `.json`, `.json.gz`.
+#### `--emoji-vendor`
+- **Type**: `string` (Default: `notocolor`)
+- Color emoji vendor font. Options:
+  - `notocolor` / `google`: Bundled Google Noto Color Emoji.
+  - `twemoji` / `twitter`: Bundled Twitter Twemoji.
+  - `system` / `none`: Fall back to host operating system emoji font.
 
-**-o / --output (REQUIRED)**
-Path to output file. File extension will be used to determine new chat type. Valid extensions are: `.json`, `.html`, and `.txt`.
+#### `--offline`
+- **Type**: `bool` (Default: `false`)
+- Disables all external HTTP network requests. Renders strictly from assets pre-embedded inside the chat JSON archive.
 
-**--compression**
-(Default: `None`) Compresses an output json chat file using a specified compression, usually resulting in 40-90% size reductions. Valid values are: `None`, `Gzip`. More formats will be supported in the future.
+---
 
-**-E / --embed-missing**
-(Default: `false`) Embed missing emotes, badges, and cheermotes. Already embedded images will be untouched.
+### Fine-Grained Layout & Element Scaling
 
-**-R / --replace-embeds**
-(Default: `false`) Replace all embedded emotes, badges, and cheermotes in the file. All embedded data will be overwritten!
+Customize visual spacing, padding, and proportions with multiplier floats (Default `1.0`):
 
-**b / --beginning**
-(Default: `-1`) New time for chat beginning (`-1` = keep current trim). See [Time durations](#time-durations) for a more detailed explanation. Comments may be added but not removed.
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--scale-emote` | `1.0` | Multiplier for emote image size. |
+| `--scale-badge` | `1.0` | Multiplier for badge icon size. |
+| `--scale-emoji` | `1.0` | Multiplier for emoji icon size. |
+| `--scale-avatar` | `1.0` | Multiplier for user avatar icon size. |
+| `--scale-vertical` | `1.0` | Multiplier for vertical line spacing between messages. |
+| `--scale-side-padding` | `1.0` | Multiplier for left/right margin padding inside the canvas. |
+| `--scale-section-height` | `1.0` | Multiplier for overall comment section vertical bounding box. |
+| `--scale-word-space` | `1.0` | Spacing between individual words. |
+| `--scale-emote-space` | `1.0` | Spacing between consecutive emotes. |
+| `--scale-highlight-stroke` | `1.0` | Thickness of the subscription accent highlight line. |
+| `--scale-highlight-indent` | `1.0` | Indentation margin for subscription accent highlight blocks. |
 
-**-e / --ending**
-(Default: `-1`) New time for chat ending (`-1` = keep current trim). See [Time durations](#time-durations) for a more detailed explanation. Comments may be added but not removed.
+---
 
-**--bttv**
-(Default: `true`) Enable embedding BTTV emotes.
+### Chat Moderation & Filtering
 
-**--ffz**
-(Default: `true`) Enable embedding FFZ emotes.
+#### `--ignore-users`
+- **Type**: `string` (Default: `""`)
+- Comma-separated list of usernames to omit completely from the render (case-insensitive).
+- Example: `--ignore-users "Nightbot,StreamElements,Moobot"`
 
-**--stv**
-(Default: `true`) Enable embedding 7TV emotes.
+#### `--ban-words`
+- **Type**: `string` (Default: `""`)
+- Comma-separated list of words or phrases to filter. Any message containing a banned word will be omitted (case-insensitive).
+- Example: `--ban-words "free followers,buy viewers"`
 
-**--timestamp-format**
-(Default: `Relative`) Sets the timestamp format for .txt chat logs. Valid values are: `Utc`, `Relative`, and `None`.
+#### `--highlight-users`
+- **Type**: `string` (Default: `""`)
+- Comma-separated list of usernames whose comments will be rendered with the `--highlight-user-color` background.
+- Example: `--highlight-users "Broadcaster,VIPUser"`
 
-**--temp-path**
-Path to temporary folder for cache.
+---
 
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
+### FFmpeg & Video Encoding Arguments
 
-## Arguments for mode chatrender
-#### Renders a chat JSON as a video
+#### `--input-args`
+- **Type**: `string`
+- Arguments passed to FFmpeg before `-i -`.
+- Default: `-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -`
+- Supported template tokens: `{fps}`, `{max_int}`, `{pix_fmt}`, `{width}`, `{height}`.
+- ChatRenderCLI automatically manages `{pix_fmt}`: when writing planar YUV, it automatically selects `yuva420p` or `yuv420p` to eliminate FFmpeg color conversion overhead.
 
-**-i / --input (REQUIRED)**
-The path to the `.json` or `.json.gz` chat file input.
+#### `--output-args`
+- **Type**: `string`
+- Arguments passed to FFmpeg after the input stream to configure video encoding.
+- Default: `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "{save_path}"`
+- Supported template tokens: `{save_path}`.
+- **VP9 Tuning**: When `libvpx-vp9` is used, ChatRenderCLI automatically detects it and injects hardware-optimized flags (`-row-mt 1`, `-cpu-used 4`, `-deadline good`, `-lag-in-frames 25`, `-auto-alt-ref 1`, and `-g <fps*8>`).
 
-**-o / --output (REQUIRED)**
-File the program will output to.
+---
 
-**--background-color**
-(Default: `#111111`) The render background color in the string format of `#RRGGBB` or `#AARRGGBB` in hexadecimal.
+### System & Temporary Paths
 
-**--alt-background-color**
-(Default: `#191919`) The alternate message background color in the string format of `#RRGGBB` or `#AARRGGBB` in hexadecimal. Requires `--alternate-backgrounds`.
+#### `--ffmpeg-path`
+- **Type**: `string` (Default: auto-detected from PATH or working directory)
+- Explicit file path to a standalone `ffmpeg` executable.
 
-**--highlight-user-color**
-(Default: `#C8FF0059`) The highlighted user message background color in the string format of `#RRGGBB` or `#AARRGGBB` in hexadecimal. Requires `--highlight-users`.
+#### `--temp-path`
+- **Type**: `string` (Default: system temporary directory)
+- Path to temporary folder used for caching downloaded emotes, badges, and GIF files.
 
-**--message-color**
-(Default: `#ffffff`) The message text color in the string format of `#RRGGBB` or `#AARRGGBB` in hexadecimal.
+---
 
-**-w / --chat-width**
-(Default: `350`) Width of chat render.
+## Mode: `ffmpeg`
 
-**-h / --chat-height**
-(Default: `600`) Height of chat render.
+Manage standalone FFmpeg executables without needing manual installations.
 
-**-b / --beginning**
-(Default: `-1`) Time to trim the beginning of the render (`-1` = keep current trim). See [Time durations](#time-durations) for a more detailed explanation.
+#### `-d` / `--download`
+- **Type**: `bool` (Default: `false`)
+- Downloads an official, portable FFmpeg binary matching your operating system directly into the working directory.
 
-**-e / --ending**
-(Default: `-1`) Time to trim the ending of the render (`-1` = keep current trim). See [Time durations](#time-durations) for a more detailed explanation.
+```cmd
+ChatRenderCLI.exe ffmpeg -d
+```
 
-**--bttv**
-(Default: `true`) Enable BTTV emotes.
+---
 
-**--ffz**
-(Default: `true`) Enable FFZ emotes.
+## Mode: `cache`
 
-**--stv**
-(Default: `true`) Enable 7TV emotes.
+Manage the local asset cache containing downloaded emotes, badges, avatars, and resolved Giphy titles.
 
-**--allow-unlisted-emotes**
-(Default: `true`) Allow unlisted 7TV emotes in the render.
+#### `-c` / `--clear`
+- Prompts for confirmation and deletes all cached assets in the temporary directory.
 
-**--sub-messages**
-(Default: `true`) Enable sub / re-sub messages.
+#### `--force-clear`
+- Deletes all cached assets immediately without prompting for confirmation.
 
-**--badges**
-(Default: `true`) Enable chat badges.
+```cmd
+ChatRenderCLI.exe cache -c
+ChatRenderCLI.exe cache --force-clear
+```
 
-**--outline**
-(Default: `false`) Enable outline around chat messages.
+---
 
-**--outline-size**
-(Default: `4`) Size of outline if outline is enabled.
+## Video Production Guides
 
-**-f / --font**
-(Default: `Inter Embedded`) Font to use.
+### 1. Transparent WebM VP9 Alpha (Filmora, Premiere, DaVinci, OBS)
+To render a chat overlay with true alpha transparency for seamless compositing onto your video track:
 
-**--font-size**
-(Default: `12`) Font size.
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.webm -w 420 -h 1080 --framerate 60 --background-color "#00000000" --output-args "-c:v libvpx-vp9 -crf 18 -b:v 0 -pix_fmt yuva420p \"{save_path}\""
+```
 
-**--message-fontstyle**
-(Default: `normal`) Font style of message. Valid values are **normal**, **bold**, **italic**, and **bolditalic**.
+#### Why This Is Fast:
+- **Planar `yuva420p` Pipe**: ChatRenderCLI automatically detects `-pix_fmt yuva420p` and converts frames directly in C#, cutting pipe bandwidth from 4 bytes/pixel down to 2.5 bytes/pixel.
+- **Zero Redundant Swscale**: FFmpeg receives native `yuva420p` frames without executing CPU-heavy `swscale` filters on every tick.
+- **Dynamic GOP Scaling**: ChatRenderCLI sets `-g` to `framerate * 8` (e.g. `-g 480` at 60 FPS), maintaining fast timeline scrubbing in Wondershare Filmora 15 and DaVinci Resolve without bloating file sizes.
+- **Row-Based Multithreading & Parallel Segments**: Automatically adds `-row-mt 1` and `-cpu-used 8`, and partitions the timeline across parallel FFmpeg workers (`-j` / `--jobs`) to saturate all CPU cores even when `libvpx-vp9` hits its per-process tile/alpha threading ceiling.
 
-**--username-fontstyle**
-(Default: `bold`) Font style of username. Valid values are **normal**, **bold**, **italic**, and **bolditalic**.
+---
 
-**--timestamp**
-(Default: `false`) Enables timestamps to the left of messages, similar to VOD chat on Twitch.
+### 2. Apple ProRes 4444 Transparent MOV
+For editing on macOS or workflows requiring lossless intra-frame compression with alpha:
 
-**--generate-mask**
-(Default: `false`) Generates a mask file of the chat in addition to the rendered chat.
+```bash
+ChatRenderCLI -i chat.json -o chat.mov -w 420 -h 1080 --framerate 60 --background-color "#00000000" --output-args "-c:v prores_ks -profile:v 4 -pix_fmt yuva444p10le \"{save_path}\""
+```
 
-**--sharpening**
-(Default: `false`) Appends `-filter_complex "smartblur=lr=1:ls=-1.0"` to the `input-args`. Works best with `font-size` 24 or larger.
+---
 
-**--framerate**
-(Default: `30`) Framerate of the render.
+### 3. Dual-Stream Alpha Masking (`--generate-mask`)
+If your video editing suite does not support WebM VP9 or ProRes alpha channels, use standard H.264 with `--generate-mask`:
 
-**--update-rate**
-(Default: `0.2`) Time in seconds to update chat render output.
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 400 -h 1000 --generate-mask
+```
 
-**--input-args**
-(Default: `-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt bgra -video_size {width}x{height} -i -`) Input arguments for FFmpeg chat render.
+This outputs two synchronized files:
+1. `chat.mp4`: The chat video with solid background.
+2. `chat_mask.mp4`: High-contrast grayscale mask video (white = text/emotes, black = background).
 
-**--output-args**
-(Default: `-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "{save_path}"`) Output arguments for FFmpeg chat render.
+In your video editor, place `chat.mp4` on track 2, `chat_mask.mp4` on track 3, and set the composite track matte mode to **Luma Matte**.
 
-**--ignore-users**
-(Default: ` `) List of usernames to ignore when rendering, separated by commas. Not case-sensitive.
+---
 
-**--ban-words**
-(Default: ` `) List of words or phrases to ignore when rendering, separated by commas. Not case-sensitive.
+### 4. High Frame Rate (60 & 120 FPS) Rendering
+Doubling framerate from 30 FPS to 60 FPS doubles tick counts, but **does not** double chat updates. ChatRenderCLI uses several specialized optimizations:
 
-**--highlight-users**
-(Default: ` `) List of users whose message backgrounds will be drawn in the chosen highlight color, separated by commas. Not case-sensitive.
+1. **O(1) Next-Transition Short-Circuiting**: ChatRenderCLI inspects active animated emotes and calculates `_animNextChangeTickMs`. If no emote changes frame on the current tick, the entire emote scan and composition is bypassed in 0.001 ms.
+2. **Incremental Row Patching**: Only the specific rows spanning advancing animated emotes are converted to YUV; solid or unchanged rows are preserved.
+3. **Hardware Queue Sizing**: Rawvideo input buffers automatically scale to `-thread_queue_size 1024` to prevent pipe stalls.
 
-**--badge-filter**
-(Default: `0`) Bitmask of types of Chat Badges to filter out. Add the numbers of the types of badges you want to filter. For example, to filter out Moderator and Broadcaster badges only enter the value of 6.
+---
 
-Other = `1`, Broadcaster = `2`, Moderator = `4`, VIP = `8`, Subscriber = `16`, Predictions = `32`, NoAudioVisual = `64`, PrimeGaming = `128`
-
-**--dispersion**
-(Default: `false`) In November 2022 a Twitch API change made chat messages download only in whole seconds. This option uses additional metadata to attempt to restore messages to when they were actually sent. This may result in a different comment order. Requires an update rate less than 1.0 for effective results.
-
-**--alternate-backgrounds**
-(Default: `false`) Alternates the background color of every other chat message to help tell them apart.
-
-**--readable-colors**
-(Default: `true`) Increases the contrast of usernames against the background or outline color.
-
-**--avatars**
-(Default: `false`) Renders the avatars of users next to their username and badges
-
-**--offline**
-(Default: `false`) Render completely offline using only embedded emotes, badges, and bits from the input json.
-
-**--emoji-vendor**
-(Default: `notocolor`) The emoji vendor used for rendering emojis. Valid values are: `twitter` / `twemoji`, `google` / `notocolor`, `none`.
-
-**--ffmpeg-path**
-(Default: ` `) Path to FFmpeg executable.
-
-**--temp-path**
-(Default: ` `) Path to temporary folder for cache.
-
-**--skip-drive-waiting**
-(Default: `false`) Do not wait for the output drive to transmit a ready signal before writing the next frame. Waiting is usually only necessary on low-end USB drives. Skipping can result in 1-5% render speed increases.
-
-**--scale-emote**
-(Default: `1.0`) Number to scale emote images.
-
-**--scale-badge**
-(Default: `1.0`) Number to scale badge images.
-
-**--scale-emoji**
-(Default: `1.0`) Number to scale emoji images.
-
-**--scale-avatar**
-(Default: `1.0`) Number to scale avatar images.
-
-**--scale-username**
-(Default: `1.0`) Number to scale username font relative to the message font size.
-
-**--scale-vertical**
-(Default: `1.0`) Number to scale vertical padding.
-
-**--scale-side-padding**
-(Default: `1.0`) Number to scale side padding.
-
-**--scale-section-height**
-(Default: `1.0`) Number to scale section height of comments.
-
-**--scale-word-space**
-(Default: `1.0`) Number to scale spacing between words.
-
-**--scale-emote-space**
-(Default: `1.0`) Number to scale spacing between emotes.
-
-**--scale-highlight-stroke**
-(Default: `1.0`) Number to scale highlight stroke size (sub messages).
-
-**--scale-highlight-indent**
-(Default: `1.0`) Number to scale highlight indent size (sub messages).
-
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
-
-## Arguments for mode info
-#### Prints information about a VOD, highlight, or clip
-
-**-u / --id (REQUIRED)** The ID or URL of the VOD or clip to print the stream info about.
-
-**-f / --format**
-(Default: `Table`) The format in which the information should be printed. Valid values are: `Raw`, `Table`, and `M3U` / `M3U8`.
-
-When using table format, use a terminal that supports ANSI escape sequences for best results.
-
-**--use-utf8**
-(Default: `true`) Ensures UTF-8 encoding is used when writing results to standard output.
-
-**--oauth**
-OAuth access token to access subscriber only VODs. <ins>**DO NOT SHARE YOUR OAUTH TOKEN WITH ANYONE.**</ins>
-
-## Arguments for mode ffmpeg
-#### Manage standalone FFmpeg
-
-**-d / --download**
-(Default: `false`) Downloads FFmpeg as a standalone file.
-
-## Arguments for mode cache
-#### Manage the working cache.
-
-**-c / --clear**
-(Default: `false`) Clears the default cache folder.
-
-**--force-clear**
-(Default: `false`) Clears the default cache folder, bypassing the confirmation prompt.
-
-## Arguments for mode update
-#### Manages updating TwitchDownloaderCLI
-
-**-f / --force**
-(Default: `false`) Bypasses the confirmation prompt.
-
-**-k / --keep-update**
-(Default: `false`) Retain the downloaded update zip file instead of deleting it after the update is finished.
-
-## Arguments for mode tsmerge
-#### Concatenates multiple .ts/.tsv/.tsa/.m2t/.m2ts (MPEG Transport Stream) files into a single file
-
-**-i / --input (REQUIRED)**
-Path a text file containing the absolute paths of the files to concatenate, separated by newlines. M3U/M3U8 is also supported.
-
-**-o / --output (REQUIRED)**
-File the program will output to.
-
-**--collision**
-(Default: `Prompt`) Sets the handling of output file name collisions. Valid values are: `Overwrite`, `Exit`, `Rename`, `Prompt`.
+### 5. Embedded Giphy GIFs & Memory Management
+When chat contains Giphy GIFs, ChatRenderCLI handles them with zero extra user intervention:
+- Giphy titles are resolved concurrently (8 at a time) and cached in `giphy/resolved.json.gz`.
+- When rendering huge 8-hour archives with hundreds of unique GIFs, `--image-cache-mb 256` prevents out-of-memory errors by retaining active visible GIFs and automatically evicting old off-screen frames from RAM.
 
 ---
 
 ## Example Commands
-#### Examples of typical TwitchDownloaderCLI use cases.
 
-Note: Commands are formatted for unix systems (i.e. Mac, Linux). For usage on Windows, replace `./TwitchDownloaderCLI` with `TwitchDownloaderCLI.exe` (cmd) or `./TwitchDownloaderCLI.exe` (powershell).
+#### Standard High-Quality MP4
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 420 -h 1080 --framerate 60 --update-rate 0.2
+```
 
-Download a VOD with defaults
+#### Transparent WebM with Outlines (Ideal for Gameplay Overlay)
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.webm -w 400 -h 1080 --framerate 60 --background-color "#00000000" --outline --outline-size 3 --output-args "-c:v libvpx-vp9 -crf 18 -b:v 0 -pix_fmt yuva420p \"{save_path}\""
+```
 
-    ./TwitchDownloaderCLI videodownload --id 612942303 -o video.mp4
+#### Clean Dark Mode with Alternating Rows
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 -w 450 -h 900 --background-color "#0E0E10" --alt-background-color "#18181B" --alternate-backgrounds --font "Inter" --font-size 14
+```
 
-Download a small portion of a VOD
+#### Moderated Chat (Hiding Bots, Stream Elements, and Moderator Badges)
+```cmd
+ChatRenderCLI.exe -i chat.json -o chat.mp4 --ignore-users "StreamElements,Nightbot,Moobot" --badge-filter 4
+```
 
-    ./TwitchDownloaderCLI videodownload --id 612942303 -b 0:01:40 -e 0:03:20 -o video.mp4
+#### Segment Render (Render 15 Minutes Only)
+```cmd
+ChatRenderCLI.exe -i chat.json -o highlight_chat.mp4 -b 00:15:00 -e 00:30:00
+```
 
-Download a Clip with defaults
-
-    ./TwitchDownloaderCLI clipdownload --id NurturingCalmHamburgerVoHiYo -o clip.mp4
-
-Download a Chat JSON with embedded emotes/badges from Twitch and emotes from Bttv
-
-    ./TwitchDownloaderCLI chatdownload --id 612942303 --embed-images --bttv=true --ffz=false --stv=false -o chat.json
-
-Download a Chat as plain text with timestamps
-
-    ./TwitchDownloaderCLI chatdownload --id 612942303 --timestamp-format Relative -o chat.txt
-
-Add embeds to a chat file that was downloaded without embeds
-
-    ./TwitchDownloaderCLI chatupdate -i chat.json -o chat_embedded.json --embed-missing
-
-Convert a JSON chat file to HTML
-
-    ./TwitchDownloaderCLI chatupdate -i chat.json -o chat.html
-
-Render a chat with defaults
-
-    ./TwitchDownloaderCLI chatrender -i chat.json -o chat.mp4
-
-Render a chat with custom video settings and message outlines
-
-    ./TwitchDownloaderCLI chatrender -i chat.json -h 1440 -w 720 --framerate 60 --outline -o chat.mp4
-
-Display the info about a VOD in table format
-
-    ./TwitchDownloaderCLI info --id 612942303 --format table
-
-Display the info about a clip in raw format
-
-    ./TwitchDownloaderCLI info --id NurturingCalmHamburgerVoHiYo --format raw
-
-Render a chat with custom FFmpeg arguments
-
-    ./TwitchDownloaderCLI chatrender -i chat.json --output-args='-c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p "{save_path}"' -o chat.mp4
-
-Download a portable FFmpeg binary for your system
-
-    ./TwitchDownloaderCLI ffmpeg --download
-
-Clear the default TwitchDownloader cache folder
-
-    ./TwitchDownloaderCLI cache --clear
-
-Check for newer versions of TwitchDownloaderCLI and immediately download it if it exists
-
-    ./TwitchDownloaderCLI update --force
-
-Concatenate several ts files into a single output file
-
-    TwitchDownloaderCLI tsmerge -i list.txt -o output.ts
-
-Print the available operations
-
-    ./TwitchDownloaderCLI help
-
-Print the available options for the VOD downloader
-
-    ./TwitchDownloaderCLI videodownload --help
+#### Fully Offline Render from Archived JSON
+```cmd
+ChatRenderCLI.exe -i archived_chat.json.gz -o chat.mp4 --offline
+```
 
 ---
 
-## Additional Notes
+## Technical Reference
 
-### ID parsing
-All `--id` inputs will accept either video/clip IDs or full video/clip URLs. i.e. `--id 612942303` or `--id https://twitch.tv/videos/612942303`.
+### Time Duration Syntax
+Trimming arguments (`-b` / `--beginning` and `-e` / `--ending`) accept:
+- **Seconds**: `45` or `45s`
+- **Milliseconds**: `500ms`
+- **Minutes**: `10m`
+- **Hours**: `2h`
+- **Timestamp Strings**: `mm:ss` (e.g., `04:30`) or `hh:mm:ss` (e.g., `01:15:30.500`)
 
-### String arguments
-String arguments that contain spaces should be wrapped in either single quotes <kbd>'</kbd> or double quotes <kbd>"</kbd> depending on your shell. i.e. `--output 'my output file.mp4'` or `--output "my output file.mp4"`
+### Color Hex Formats
+Color arguments (`--background-color`, `--alt-background-color`, `--highlight-user-color`, `--message-color`) accept:
+- 6-digit RGB: `#RRGGBB` (e.g., `#111111`, `#FFFFFF`)
+- 8-digit ARGB: `#AARRGGBB` (e.g., `#00000000` for 100% transparent, `#80000000` for 50% semi-transparent black)
 
-### Boolean flags
-Default true boolean flags must be assigned: `--default-true-flag=false`. Default false boolean flags should still be raised normally: `--default-false-flag`.
+### Badge Filter Bitmask
+To hide multiple badge categories, sum their corresponding integer values and pass the result to `--badge-filter`:
 
-### Enum flag arguments
-Enum flag arguments may be assigned without spaces `--flag Value1,Value2,Value3` or with spaces when wrapped in quotes `--flag "Value1, Value2, Value3"` (see [String arguments](#string-arguments)).
+| Category | Value |
+| :--- | :--- |
+| Other | `1` |
+| Broadcaster | `2` |
+| Moderator | `4` |
+| VIP | `8` |
+| Subscriber | `16` |
+| Predictions | `32` |
+| NoAudio / NoVideo | `64` |
+| Prime Gaming | `128` |
 
-### Time durations
-Time duration arguments may be formatted in milliseconds `###ms`, seconds `###s`, minutes `###m`, hours `###h`, or [time](https://learn.microsoft.com/en-us/dotnet/api/system.timespan.parse?view=net-10.0) (i.e. `hh:mm:ss`, `mm:ss`, `dd.hh:mm:ss.ms`).
-If the time duration is given as a number without a unit, seconds will be assumed. Decimals are supported.
+*Example*: To filter Broadcaster (`2`) and Moderator (`4`), pass `--badge-filter 6`.
 
-"Beginning" arguments set when trimming begins. For example, `--beginning 17s` will make the output start 17 seconds after the source begins.
+### Log Level Flags
+Combine flags with commas:
+`--log-level Status,Info,Warning,Error`
+Valid flags: `None`, `Status`, `Verbose`, `Info`, `Warning`, `Error`, `Ffmpeg`.
 
-"Ending" arguments set when trimming ends. For example, `--ending 17s` will make the output end at 17 seconds after the source begins.
-
-If `--beginning 17s` and `--ending 27s` are used together, the resulting output will be of seconds `17-27` of the source and will have a duration of 10 seconds.
-
-### Rendering prerequisites
-For Linux users, ensure both `fontconfig` and `libfontconfig1` are installed. `apt-get install fontconfig libfontconfig1` on Ubuntu.
-
-Some distros, like Linux Alpine, lack fonts for some languages (Arabic, Persian, Thai, etc.) If this is the case for you, install additional fonts families such as [Noto](https://fonts.google.com/noto/specimen/Noto+Sans) or check your distro's wiki page on fonts as it may have an install command for this specific scenario, such as the [Linux Alpine](https://wiki.alpinelinux.org/wiki/Fonts) font page.
-
-### TSMerge notes
-The list file for `tsmerge` may contain relative or absolute paths, with one path per line.
-Alternatively, the list file may also be an M3U8 playlist file.
+### File Collision Modes
+`--collision Overwrite` | `--collision Exit` | `--collision Rename` | `--collision Prompt`

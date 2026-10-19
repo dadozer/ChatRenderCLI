@@ -1,4 +1,4 @@
-﻿using TwitchDownloaderCLI.Models;
+using TwitchDownloaderCLI.Models;
 
 namespace TwitchDownloaderCLI.Tools
 {
@@ -19,7 +19,17 @@ namespace TwitchDownloaderCLI.Tools
         {
             if (args.Length > 0)
             {
-                args[0] = args[0].ToLower();
+                var firstArgLower = args[0].ToLowerInvariant();
+                if (firstArgLower is "chatrender" or "ffmpeg" or "cache" or "help" or "--help" or "version" or "--version")
+                {
+                    args[0] = firstArgLower;
+                    return args;
+                }
+
+                var prependedArgs = new string[args.Length + 1];
+                prependedArgs[0] = "chatrender";
+                Array.Copy(args, 0, prependedArgs, 1, args.Length);
+                return prependedArgs;
             }
 
             return args;

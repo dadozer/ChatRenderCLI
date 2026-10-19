@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 
 namespace TwitchDownloaderCore.TwitchObjects
@@ -117,13 +117,13 @@ namespace TwitchDownloaderCore.TwitchObjects
             {
                 body = body,
                 bits_spent = bits_spent,
-                fragments = new List<Fragment>(fragments.Capacity),
+                fragments = fragments is null ? null : new List<Fragment>(fragments.Capacity),
                 user_badges = new List<UserBadge>(user_badges?.Capacity ?? 0),
                 user_color = user_color,
                 user_notice_params = user_notice_params?.Clone(),
                 emoticons = new List<Emoticon2>(emoticons?.Capacity ?? 0)
             };
-            for (int i = 0; i < fragments.Count; i++)
+            for (int i = 0; i < fragments?.Count; i++)
             {
                 newMessage.fragments.Add(fragments[i].Clone());
             }
@@ -175,8 +175,8 @@ namespace TwitchDownloaderCore.TwitchObjects
                 content_type = content_type,
                 content_id = content_id,
                 content_offset_seconds = content_offset_seconds,
-                commenter = commenter.Clone(),
-                message = message.Clone()
+                commenter = commenter?.Clone(),
+                message = message?.Clone()
             };
         }
     }
@@ -227,6 +227,7 @@ namespace TwitchDownloaderCore.TwitchObjects
     {
         public string id { get; set; }
         public int imageScale { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public byte[] data { get; set; }
         public string name { get; set; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -264,6 +265,8 @@ namespace TwitchDownloaderCore.TwitchObjects
         public List<EmbedEmoteData> firstParty { get; set; } = new();
         public List<EmbedChatBadge> twitchBadges { get; set; } = new();
         public List<EmbedCheerEmote> twitchBits { get; set; } = new();
+        /// <summary>GIFs posted in chat, keyed by <see cref="EmbedEmoteData.name"/> holding the Giphy title.</summary>
+        public List<EmbedEmoteData> gifs { get; set; } = new();
     }
 
     public class LegacyEmbeddedData

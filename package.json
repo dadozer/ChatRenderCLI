@@ -1,0 +1,12 @@
+{
+  "name": "chatrender-cli",
+  "version": "1.56.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "build": "node --check server.mjs",
+    "start": "node server.mjs",
+    "lint": "node --check server.mjs"
+  }
+}

@@ -1,4 +1,4 @@
-﻿using SkiaSharp;
+using SkiaSharp;
 using TwitchDownloaderCLI.Modes.Arguments;
 using TwitchDownloaderCLI.Tools;
 using TwitchDownloaderCore;
@@ -42,6 +42,9 @@ namespace TwitchDownloaderCLI.Modes
                 BttvEmotes = (bool)inputOptions.BttvEmotes!,
                 FfzEmotes = (bool)inputOptions.FfzEmotes!,
                 StvEmotes = (bool)inputOptions.StvEmotes!,
+                GiphyGifs = (bool)inputOptions.GiphyGifs!,
+                GifMaxHeightPercent = inputOptions.GifMaxHeightPercent,
+                ImageCacheMb = inputOptions.ImageCacheMb,
                 AllowUnlistedEmotes = (bool)inputOptions.AllowUnlistedEmotes!,
                 Outline = inputOptions.Outline,
                 OutlineSize = inputOptions.OutlineSize,
@@ -99,6 +102,7 @@ namespace TwitchDownloaderCLI.Modes
                 DisperseCommentOffsets = inputOptions.DisperseCommentOffsets,
                 AlternateMessageBackgrounds = inputOptions.AlternateMessageBackgrounds,
                 AdjustUsernameVisibility = (bool)inputOptions.AdjustUsernameVisibility!,
+                ParallelJobs = inputOptions.ParallelJobs,
                 FileCollisionCallback = collisionHandler.HandleCollisionCallback,
             };
 

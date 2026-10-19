@@ -1,255 +1,86 @@
 name: Build and Upload Release
- 
-on: 
- workflow_dispatch:
-   inputs:
-     release_tag:
-        description: 'Release Tag'     
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release Tag'
         required: true
         default: '1.0.0'
 
 jobs:
-  create-release:
-   runs-on: ubuntu-24.04
-   
-   steps:
-    - name: Create a Release
-      id: create_release
-      uses: actions/create-release@v1.1.4
-      env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        # The name of the tag. This should come from the webhook payload, `github.GITHUB_REF` when a user pushes a new tag
-        tag_name: ${{ github.event.inputs.release_tag }}
-        # The name of the release. For example, `Release v1.0.1`
-        release_name: ${{ github.event.inputs.release_tag }}
-    - shell: bash
-      run: |
-        expr "${{ steps.create_release.outputs.upload_url }}" > upload_url.txt
-    - name: Upload URL
-      uses: actions/upload-artifact@v7
-      with:
-        name: upload_url.txt
-        path: upload_url.txt
-  
-  build-gui:
+  build-cli-windows:
     runs-on: windows-latest
-    needs: [create-release]
-    env:
-     ACTIONS_ALLOW_UNSECURE_COMMANDS: true
- 
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build Windows GUI
-      run: dotnet publish TwitchDownloaderWPF -p:PublishProfile=Windows -p:DebugType=Embedded
-    
-    - name: Download FFmpeg To Workspace
-      uses: carlosperate/download-file-action@v2.0.3
-      with:
-        # URL of the file to download
-        file-url: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-        # New filename to rename the downloaded file
-        file-name: ffmpeg.zip
-        
-    - name: Bundle FFmpeg
-      run: tar xfz ffmpeg.zip --strip-components=1; copy bin/ffmpeg.exe TwitchDownloaderWPF/bin/Release/net10.0-windows/publish/win-x64/ffmpeg.exe
-      
-    - name: Zip Windows GUI Release Asset
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderWPF/bin/Release/net10.0-windows/publish/win-x64"
-        dest: TwitchDownloaderGUI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-    
-    - name: Download URL
-      uses: actions/download-artifact@v8
-      with:
-        name: upload_url.txt
-        
-    - name: Read URL
-      id: url
-      uses: juliangruber/read-file-action@v1.1.8
-      with:
-        path: upload_url.txt
-        
-    - name: Upload Windows GUI Release Asset
-      id: upload-release-asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderGUI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-        asset_name: TwitchDownloaderGUI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-        asset_content_type: application/zip
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build Windows CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Windows -p:DebugType=Embedded
+      - name: Upload Windows CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-Windows-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/Windows/
 
-  build-cli:
+  build-cli-linux:
     runs-on: ubuntu-24.04
-    needs: [create-release, build-gui]
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build Windows CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Windows -p:DebugType=Embedded
-    - name: Build Linux CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Linux -p:DebugType=Embedded
-    - name: Build LinuxAlpine CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxAlpine -p:DebugType=Embedded
-    - name: Build LinuxArm CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm -p:DebugType=Embedded
-    - name: Build LinuxArm64 CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm64 -p:DebugType=Embedded
-        
-    - name: Zip Windows CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/Windows"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-        
-    - name: Zip Linux CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/Linux"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Linux-x64.zip
-        
-    - name: Zip LinuxAlpine CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxAlpine"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxAlpine-x64.zip
-    
-    - name: Zip LinuxArm CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm.zip
-        
-    - name: Zip LinuxArm64 CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm64"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm64.zip
-    
-    - name: Download URL
-      uses: actions/download-artifact@v8
-      with:
-        name: upload_url.txt
-        
-    - name: Read URL
-      id: url
-      uses: juliangruber/read-file-action@v1.1.8
-      with:
-        path: upload_url.txt
-    
-    - name: Upload Windows CLI Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Windows-x64.zip
-        asset_content_type: application/zip
-      
-    - name: Upload Linux CLI Release Asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Linux-x64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-Linux-x64.zip
-        asset_content_type: application/zip
-        
-    - name: Upload LinuxAlpine CLI Release Asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxAlpine-x64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxAlpine-x64.zip
-        asset_content_type: application/zip
-        
-    - name: Upload LinuxArm CLI Release Asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm.zip
-        asset_content_type: application/zip
-        
-    - name: Upload LinuxArm64 CLI Release Asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-LinuxArm64.zip
-        asset_content_type: application/zip
-  
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build Linux CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Linux -p:DebugType=Embedded
+      - name: Build LinuxAlpine CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxAlpine -p:DebugType=Embedded
+      - name: Build LinuxArm CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm -p:DebugType=Embedded
+      - name: Build LinuxArm64 CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm64 -p:DebugType=Embedded
+      - name: Upload Linux CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-Linux-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/Linux/
+      - name: Upload LinuxAlpine CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-LinuxAlpine-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxAlpine/
+      - name: Upload LinuxArm CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-LinuxArm
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm/
+      - name: Upload LinuxArm64 CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-LinuxArm64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm64/
+
   build-cli-mac:
     runs-on: macos-latest
-    needs: [create-release, build-cli]
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build MacOS CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOS -p:DebugType=Embedded
-    - name: Build MacOSArm64 CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOSArm64 -p:DebugType=Embedded
-      
-    - name: Zip MacOS CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOS"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOS-x64.zip
-
-    - name: Zip MacOSArm64 CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOSArm64"
-        dest: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOSArm64.zip
-    
-    - name: Download URL
-      uses: actions/download-artifact@v8
-      with:
-        name: upload_url.txt
-        
-    - name: Read URL
-      id: url
-      uses: juliangruber/read-file-action@v1.1.8
-      with:
-        path: upload_url.txt
-    
-    - name: Upload MacOS CLI Release Asset 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOS-x64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOS-x64.zip
-        asset_content_type: application/zip
-
-    - name: Upload MacOSArm64 CLI Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.url.outputs.content }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-        asset_path: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOSArm64.zip
-        asset_name: TwitchDownloaderCLI-${{ github.event.inputs.release_tag }}-MacOSArm64.zip
-        asset_content_type: application/zip
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build MacOS CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOS -p:DebugType=Embedded
+      - name: Build MacOSArm64 CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOSArm64 -p:DebugType=Embedded
+      - name: Upload MacOS CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-MacOS-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOS/
+      - name: Upload MacOSArm64 CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-${{ github.event.inputs.release_tag }}-MacOSArm64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOSArm64/

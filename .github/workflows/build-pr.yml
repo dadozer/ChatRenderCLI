@@ -1,6 +1,6 @@
 name: Build and Upload Pull Request
- 
-on: 
+
+on:
   push:
     branches: [ master ]
   pull_request:
@@ -10,9 +10,9 @@ jobs:
   run-tests:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - name: Setup .NET
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
       - name: Run TwitchDownloaderCLI Tests
@@ -20,157 +20,78 @@ jobs:
       - name: Run TwitchDownloaderCore Tests
         run: dotnet test TwitchDownloaderCore.Tests
 
-  build-gui:
-    runs-on: windows-latest
-    env:
-     ACTIONS_ALLOW_UNSECURE_COMMANDS: true
- 
-    steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build Windows GUI
-      run: dotnet publish TwitchDownloaderWPF -p:PublishProfile=Windows -p:DebugType=Portable
-    
-    - name: Download FFmpeg To Workspace
-      uses: carlosperate/download-file-action@v2.0.3
-      with:
-        # URL of the file to download
-        file-url: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
-        # New filename to rename the downloaded file
-        file-name: ffmpeg.zip
-        
-    - name: Bundle FFmpeg
-      run: tar xfz ffmpeg.zip --strip-components=1; copy bin/ffmpeg.exe TwitchDownloaderWPF/bin/Release/net10.0-windows/publish/win-x64/ffmpeg.exe
-      
-    - name: Zip Windows GUI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderWPF/bin/Release/net10.0-windows/publish/win-x64"
-        dest: TwitchDownloaderGUI-Windows-x64.zip
-
-    - name: Upload Windows GUI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderGUI-Windows-x64.zip
-        path: TwitchDownloaderGUI-Windows-x64.zip
-
   build-cli:
     runs-on: ubuntu-24.04
-    needs: [build-gui]
+    needs: [run-tests]
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build Windows CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Windows -p:DebugType=Portable
-    - name: Build Linux CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Linux -p:DebugType=Portable
-    - name: Build LinuxAlpine CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxAlpine -p:DebugType=Portable
-    - name: Build LinuxArm CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm -p:DebugType=Portable
-    - name: Build LinuxArm64 CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm64 -p:DebugType=Portable
-        
-    - name: Zip Windows CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/Windows"
-        dest: TwitchDownloaderCLI-Windows-x64.zip
-        
-    - name: Zip Linux CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/Linux"
-        dest: TwitchDownloaderCLI-Linux-x64.zip
-        
-    - name: Zip LinuxAlpine CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxAlpine"
-        dest: TwitchDownloaderCLI-LinuxAlpine-x64.zip
-    
-    - name: Zip LinuxArm CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm"
-        dest: TwitchDownloaderCLI-LinuxArm.zip
-        
-    - name: Zip LinuxArm64 CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm64"
-        dest: TwitchDownloaderCLI-LinuxArm64.zip
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build Windows CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Windows -p:DebugType=Portable
+      - name: Build Linux CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=Linux -p:DebugType=Portable
+      - name: Build LinuxAlpine CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxAlpine -p:DebugType=Portable
+      - name: Build LinuxArm CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm -p:DebugType=Portable
+      - name: Build LinuxArm64 CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=LinuxArm64 -p:DebugType=Portable
 
-    - name: Upload Windows CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-Windows-x64.zip
-        path: TwitchDownloaderCLI-Windows-x64.zip
+      - name: Upload Windows CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-Windows-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/Windows/
 
-    - name: Upload Linux CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-Linux-x64.zip
-        path: TwitchDownloaderCLI-Linux-x64.zip
+      - name: Upload Linux CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-Linux-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/Linux/
 
-    - name: Upload LinuxAlpine CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-LinuxAlpine-x64.zip
-        path: TwitchDownloaderCLI-LinuxAlpine-x64.zip
+      - name: Upload LinuxAlpine CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-LinuxAlpine-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxAlpine/
 
-    - name: Upload LinuxArm CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-LinuxArm.zip
-        path: TwitchDownloaderCLI-LinuxArm.zip
-        
-    - name: Upload LinuxArm64 CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-LinuxArm64.zip
-        path: TwitchDownloaderCLI-LinuxArm64.zip
+      - name: Upload LinuxArm CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-LinuxArm
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm/
+
+      - name: Upload LinuxArm64 CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-LinuxArm64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/LinuxArm64/
 
   build-cli-mac:
     runs-on: macos-latest
     needs: [build-cli]
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v6
-      with:
-        dotnet-version: 10.0.x
-    - name: Build MacOS CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOS -p:DebugType=Portable
-    - name: Build MacOSArm64 CLI
-      run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOSArm64 -p:DebugType=Portable
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build MacOS CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOS -p:DebugType=Portable
+      - name: Build MacOSArm64 CLI
+        run: dotnet publish TwitchDownloaderCLI -p:PublishProfile=MacOSArm64 -p:DebugType=Portable
 
-    - name: Zip MacOS CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOS"
-        dest: TwitchDownloaderCLI-MacOS-x64.zip
+      - name: Upload MacOS CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-MacOS-x64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOS/
 
-    - name: Zip MacOSArm64 CLI
-      uses: vimtor/action-zip@v1.3
-      with:
-        files: "TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOSArm64"
-        dest: TwitchDownloaderCLI-MacOSArm64.zip
-
-    - name: Upload MacOS CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-MacOS-x64.zip
-        path: TwitchDownloaderCLI-MacOS-x64.zip
-
-    - name: Upload MacOSArm64 CLI Artifact Asset
-      uses: actions/upload-artifact@v7
-      with:
-        name: TwitchDownloaderCLI-MacOSArm64.zip
-        path: TwitchDownloaderCLI-MacOSArm64.zip
+      - name: Upload MacOSArm64 CLI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatRenderCLI-MacOSArm64
+          path: TwitchDownloaderCLI/bin/Release/net10.0/publish/MacOSArm64/
