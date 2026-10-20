@@ -56,11 +56,11 @@ namespace TwitchDownloaderCore
         [GeneratedRegex("[\u2500-\u257F\u2580-\u259F\u2800-\u28FF]")]
         private static partial Regex BlockArtRegex { get; }
 
-        [GeneratedRegex(@"-cpu-used\s+[0-7]\b", RegexOptions.IgnoreCase)]
+        [GeneratedRegex(@"(?:-cpu-used|-speed)\s+[0-7]\b", RegexOptions.IgnoreCase)]
         private static partial Regex Vp9SlowCpuUsedRegex { get; }
 
-        [GeneratedRegex(@"-threads\s+0\b", RegexOptions.IgnoreCase)]
-        private static partial Regex FfmpegZeroThreadsRegex { get; }
+        [GeneratedRegex(@"-threads\s+\d+\b", RegexOptions.IgnoreCase)]
+        private static partial Regex FfmpegThreadsRegex { get; }
 
         private enum PipePixelFormat
         {
@@ -95,6 +95,46 @@ namespace TwitchDownloaderCore
         private readonly HighlightIcons highlightIcons;
         private int _usernameCenteredY;
         private readonly object _progressLock = new();
+        private long _lastProgressReportMs = -1000;
+
+        private static readonly ConcurrentDictionary<Process, byte> ActiveFfmpegProcesses = new();
+
+        static ChatRenderer()
+        {
+            AppDomain.CurrentDomain.ProcessExit += static (_, _) => KillAllActiveFfmpegProcesses();
+        }
+
+        private static void RegisterActiveProcess(Process process)
+        {
+            if (process is not null)
+            {
+                ActiveFfmpegProcesses.TryAdd(process, 0);
+            }
+        }
+
+        private static void UnregisterActiveProcess(Process process)
+        {
+            if (process is not null)
+            {
+                ActiveFfmpegProcesses.TryRemove(process, out _);
+            }
+        }
+
+        private static void KillAllActiveFfmpegProcesses()
+        {
+            foreach (var kvp in ActiveFfmpegProcesses)
+            {
+                try
+                {
+                    if (!kvp.Key.HasExited)
+                    {
+                        kvp.Key.Kill(entireProcessTree: true);
+                    }
+                }
+                catch { /* ignore */ }
+            }
+            ActiveFfmpegProcesses.Clear();
+        }
 
         // Thread-local rendering contexts for parallel CommentSection and segment rendering
         private ThreadLocal<SectionRenderContext> _workerContexts;
@@ -210,11 +250,11 @@ namespace TwitchDownloaderCore
 
             try
             {
-                await RenderAsyncImpl(outputFileInfo, outputFs, maskFileInfo, maskFs, cancellationToken);
+                await RenderAsyncImpl(outputFileInfo, outputFs, maskFileInfo, maskFs, cancellationToken).ConfigureAwait(false);
             }
             catch
             {
-                await Task.Delay(100, CancellationToken.None);
+                await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
 
                 TwitchHelper.CleanUpClaimedFile(outputFileInfo, outputFs, _progress);
                 TwitchHelper.CleanUpClaimedFile(maskFileInfo, maskFs, _progress);
@@ -226,7 +266,7 @@ namespace TwitchDownloaderCore
         private async Task RenderAsyncImpl(FileInfo outputFileInfo, FileStream outputFs, FileInfo maskFileInfo, FileStream maskFs, CancellationToken cancellationToken)
         {
             _progress.SetStatus("Fetching Images [1/2]");
-            await Task.Run(() => FetchScaledImages(cancellationToken), cancellationToken);
+            await Task.Run(() => FetchScaledImages(cancellationToken), cancellationToken).ConfigureAwait(false);
 
             if (renderOptions.DisperseCommentOffsets)
             {
@@ -303,28 +343,28 @@ namespace TwitchDownloaderCore
 
                 try
                 {
-                    await Task.Run(() => RenderVideoSegment(0, 1, startTick, endTick, sectionDefaultYPos, totalTicks, ref completedTicks, stopwatch, ffmpegProcess, maskProcess, cancellationToken), cancellationToken);
+                    await Task.Run(() => RenderVideoSegment(0, 1, startTick, endTick, sectionDefaultYPos, totalTicks, ref completedTicks, stopwatch, ffmpegProcess, maskProcess, cancellationToken), cancellationToken).ConfigureAwait(false);
                     stopwatch.Stop();
                     _progress.ReportProgress(100, stopwatch.Elapsed, TimeSpan.Zero);
                     _progress.LogInfo($"FINISHED. RENDER TIME: {stopwatch.Elapsed.TotalSeconds:F1}s SPEED: {totalTicks / (double)renderOptions.Framerate / Math.Max(0.001, stopwatch.Elapsed.TotalSeconds):F2}x");
                 }
                 catch
                 {
-                    ffmpegProcess.Dispose();
-                    maskProcess?.Dispose();
+                    TerminateAndDisposeProcess(ffmpegProcess, killIfRunning: true);
+                    TerminateAndDisposeProcess(maskProcess, killIfRunning: true);
                     GC.Collect();
                     throw;
                 }
                 finally
                 {
-                    ffmpegProcess.Dispose();
-                    maskProcess?.Dispose();
+                    TerminateAndDisposeProcess(ffmpegProcess, killIfRunning: false);
+                    TerminateAndDisposeProcess(maskProcess, killIfRunning: false);
                 }
 
                 return;
             }
 
-            await RenderParallelSegmentsAsync(segments, outputFileInfo, maskFileInfo, sectionDefaultYPos, totalTicks, cancellationToken);
+            await RenderParallelSegmentsAsync(segments, outputFileInfo, maskFileInfo, sectionDefaultYPos, totalTicks, cancellationToken).ConfigureAwait(false);
         }
 
         private List<(int StartTick, int EndTick)> ComputeRenderSegments(int startTick, int endTick)
@@ -409,6 +449,10 @@ namespace TwitchDownloaderCore
             Stopwatch stopwatch = Stopwatch.StartNew();
             long completedTicks = 0;
 
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var workerToken = linkedCts.Token;
+            var workerTasks = new Task[workerCount];
+
             try
             {
                 for (int i = 0; i < workerCount; i++)
@@ -431,7 +475,6 @@ namespace TwitchDownloaderCore
                     }
                 }
 
-                var workerTasks = new Task[workerCount];
                 for (int i = 0; i < workerCount; i++)
                 {
                     int workerId = i;
@@ -440,23 +483,47 @@ namespace TwitchDownloaderCore
                     var segMask = maskProcesses?[i];
 
                     workerTasks[i] = Task.Run(
-                        () => RenderVideoSegment(
-                            workerId,
-                            workerCount,
-                            segStart,
-                            segEnd,
-                            sectionDefaultYPos,
-                            totalTicks,
-                            ref completedTicks,
-                            stopwatch,
-                            segFfmpeg,
-                            segMask,
-                            cancellationToken),
-                        cancellationToken);
+                        () =>
+                        {
+                            try
+                            {
+                                RenderVideoSegment(
+                                    workerId,
+                                    workerCount,
+                                    segStart,
+                                    segEnd,
+                                    sectionDefaultYPos,
+                                    totalTicks,
+                                    ref completedTicks,
+                                    stopwatch,
+                                    segFfmpeg,
+                                    segMask,
+                                    workerToken);
+                            }
+                            catch
+                            {
+                                try { linkedCts.Cancel(); } catch { /* ignore */ }
+                                throw;
+                            }
+                        },
+                        CancellationToken.None);
                 }
 
-                await Task.WhenAll(workerTasks);
+                await Task.WhenAll(workerTasks).ConfigureAwait(false);
 
+                // Ensure all segment FFmpeg processes and handles are completely closed and disposed before stitching.
+                for (int i = 0; i < workerCount; i++)
+                {
+                    TerminateAndDisposeProcess(ffmpegProcesses[i], killIfRunning: false);
+                    ffmpegProcesses[i] = null;
+                    if (maskProcesses != null)
+                    {
+                        TerminateAndDisposeProcess(maskProcesses[i], killIfRunning: false);
+                        maskProcesses[i] = null;
+                    }
+                }
+
+                _progress.SetStatus("Stitching Video Segments...");
                 ConcatSegmentFiles(segmentOutputFiles, outputFileInfo, runId, isMask: false, cancellationToken);
                 if (renderOptions.GenerateMask)
                 {
@@ -469,6 +536,7 @@ namespace TwitchDownloaderCore
             }
             catch
             {
+                try { linkedCts.Cancel(); } catch { /* ignore */ }
                 GC.Collect();
                 throw;
             }
@@ -476,36 +544,120 @@ namespace TwitchDownloaderCore
             {
                 for (int i = 0; i < workerCount; i++)
                 {
-                    try { ffmpegProcesses[i]?.Dispose(); } catch { /* ignore cleanup error */ }
-                    try { maskProcesses?[i]?.Dispose(); } catch { /* ignore cleanup error */ }
-                    try
+                    TerminateAndDisposeProcess(ffmpegProcesses[i], killIfRunning: true);
+                    TerminateAndDisposeProcess(maskProcesses?[i], killIfRunning: true);
+                }
+
+                try
+                {
+                    var activeTasks = workerTasks.Where(static t => t is not null).ToArray();
+                    if (activeTasks.Length > 0)
                     {
-                        segmentOutputFiles[i]?.Refresh();
-                        if (segmentOutputFiles[i]?.Exists == true)
-                        {
-                            segmentOutputFiles[i].Delete();
-                        }
+                        await Task.WhenAll(activeTasks).ConfigureAwait(false);
                     }
-                    catch { /* ignore cleanup error */ }
+                }
+                catch
+                {
+                    // Worker exceptions are already propagated by the main try block; wait so no worker thread is still touching segment files.
+                }
+
+                for (int i = 0; i < workerCount; i++)
+                {
+                    DeleteTempFileWithRetry(segmentOutputFiles[i]);
+                    if (segmentMaskFiles?[i] != null)
+                    {
+                        DeleteTempFileWithRetry(segmentMaskFiles[i]);
+                    }
+                }
+            }
+        }
+
+        private static void TerminateAndDisposeProcess(FfmpegProcess process, bool killIfRunning)
+        {
+            if (process is null)
+            {
+                return;
+            }
+
+            UnregisterActiveProcess(process);
+
+            try
+            {
+                try
+                {
+                    process.StandardInput?.BaseStream?.Close();
+                }
+                catch { /* ignore if already closed or disposed */ }
+
+                if (!process.HasExited)
+                {
+                    if (killIfRunning)
+                    {
+                        try
+                        {
+                            process.Kill(entireProcessTree: true);
+                        }
+                        catch { /* ignore if process exited concurrently */ }
+                    }
 
                     try
                     {
-                        if (segmentMaskFiles?[i] != null)
+                        process.WaitForExit(5000);
+                        if (!process.HasExited)
                         {
-                            segmentMaskFiles[i].Refresh();
-                            if (segmentMaskFiles[i].Exists)
-                            {
-                                segmentMaskFiles[i].Delete();
-                            }
+                            process.Kill(entireProcessTree: true);
+                            process.WaitForExit(2000);
                         }
                     }
-                    catch { /* ignore cleanup error */ }
+                    catch { /* ignore */ }
+                }
+            }
+            catch { /* ignore if process was never started or already disposed */ }
+            finally
+            {
+                try { process.Dispose(); } catch { /* ignore */ }
+            }
+        }
+
+        private static void DeleteTempFileWithRetry(FileInfo fileInfo)
+        {
+            if (fileInfo is null)
+            {
+                return;
+            }
+
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                try
+                {
+                    fileInfo.Refresh();
+                    if (!fileInfo.Exists)
+                    {
+                        return;
+                    }
+
+                    fileInfo.Delete();
+                    return;
+                }
+                catch (IOException) when (attempt < 9)
+                {
+                    Thread.Sleep(50);
+                }
+                catch (UnauthorizedAccessException) when (attempt < 9)
+                {
+                    Thread.Sleep(50);
+                }
+                catch
+                {
+                    return;
                 }
             }
         }
 
         private void ConcatSegmentFiles(IReadOnlyList<FileInfo> segmentFiles, FileInfo finalOutputFile, string runId, bool isMask, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             string dir = finalOutputFile.DirectoryName ?? "";
             string listFilePath = Path.Combine(dir, $".chatrender_concat_{(isMask ? "mask_" : "")}{runId}.txt");
 
@@ -549,34 +701,56 @@ namespace TwitchDownloaderCore
 
                 _progress.LogVerbose($"Running FFmpeg segment concat with args: {concatProcess.StartInfo.Arguments}");
                 concatProcess.Start();
-                concatProcess.BeginErrorReadLine();
-                concatProcess.BeginOutputReadLine();
+                RegisterActiveProcess(concatProcess);
 
-                while (!concatProcess.WaitForExit(200))
+                try
                 {
-                    if (cancellationToken.IsCancellationRequested)
+                    concatProcess.BeginErrorReadLine();
+                    concatProcess.BeginOutputReadLine();
+
+                    using var cancelReg = cancellationToken.Register(() =>
                     {
-                        try { concatProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
-                        cancellationToken.ThrowIfCancellationRequested();
+                        try
+                        {
+                            if (!concatProcess.HasExited)
+                            {
+                                concatProcess.Kill(entireProcessTree: true);
+                            }
+                        }
+                        catch { /* ignore */ }
+                    });
+
+                    while (!concatProcess.WaitForExit(200))
+                    {
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            try { concatProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                            cancellationToken.ThrowIfCancellationRequested();
+                        }
+                    }
+
+                    concatProcess.WaitForExit();
+                    if (concatProcess.ExitCode != 0)
+                    {
+                        throw new InvalidOperationException($"FFmpeg segment concatenation failed with exit code {concatProcess.ExitCode}.");
                     }
                 }
-
-                concatProcess.WaitForExit();
-                if (concatProcess.ExitCode != 0)
+                finally
                 {
-                    throw new InvalidOperationException($"FFmpeg segment concatenation failed with exit code {concatProcess.ExitCode}.");
+                    UnregisterActiveProcess(concatProcess);
+                    try
+                    {
+                        if (!concatProcess.HasExited)
+                        {
+                            concatProcess.Kill(entireProcessTree: true);
+                        }
+                    }
+                    catch { /* ignore */ }
                 }
             }
             finally
             {
-                try
-                {
-                    if (File.Exists(listFilePath))
-                    {
-                        File.Delete(listFilePath);
-                    }
-                }
-                catch { /* ignore cleanup error */ }
+                DeleteTempFileWithRetry(new FileInfo(listFilePath));
             }
         }
 
@@ -761,6 +935,197 @@ namespace TwitchDownloaderCore
             }
         }
 
+        public static SKBitmap RenderPreviewBitmap(ChatRenderOptions options, int previewWidth, int previewHeight)
+        {
+            var bitmap = new SKBitmap(previewWidth, previewHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
+            using var canvas = new SKCanvas(bitmap);
+
+            // 1. Draw transparency checkerboard so alpha channel settings are clearly visible
+            using (var darkTile = new SKPaint { Color = new SKColor(0xFF1C1C20) })
+            using (var lightTile = new SKPaint { Color = new SKColor(0xFF28282E) })
+            {
+                canvas.Clear(darkTile.Color);
+                const int tileSize = 8;
+                for (int y = 0; y < previewHeight; y += tileSize)
+                {
+                    for (int x = ((y / tileSize) & 1) * tileSize; x < previewWidth; x += tileSize * 2)
+                    {
+                        canvas.DrawRect(x, y, tileSize, tileSize, lightTile);
+                    }
+                }
+            }
+
+            // 2. Blend configured chat background color over checkerboard
+            using (var bgPaint = new SKPaint { Color = options.BackgroundColor, BlendMode = SKBlendMode.SrcOver })
+            {
+                canvas.DrawRect(0, 0, previewWidth, previewHeight, bgPaint);
+            }
+
+            bool useEmbeddedInter = string.IsNullOrWhiteSpace(options.Font)
+                || options.Font.Equals("Inter Embedded", StringComparison.OrdinalIgnoreCase);
+            if (!useEmbeddedInter && options.Font.Equals("Inter", StringComparison.OrdinalIgnoreCase))
+            {
+                using var fm = SKFontManager.CreateDefault();
+                using var matched = fm.MatchFamily("Inter");
+                useEmbeddedInter = matched is null || !matched.FamilyName.Equals("Inter", StringComparison.OrdinalIgnoreCase);
+            }
+
+            var usernameStyle = options.UsernameFontStyle ?? SKFontStyle.Bold;
+            var messageStyle = options.MessageFontStyle ?? SKFontStyle.Normal;
+            using var nameTypeface = useEmbeddedInter
+                ? GetInterTypeface(usernameStyle)
+                : SKTypeface.FromFamilyName(options.Font, usernameStyle) ?? GetInterTypeface(usernameStyle);
+            using var msgTypeface = useEmbeddedInter
+                ? GetInterTypeface(messageStyle)
+                : SKTypeface.FromFamilyName(options.Font, messageStyle) ?? GetInterTypeface(messageStyle);
+
+            double refScale = Math.Max(0.25, options.ReferenceScale);
+            using var outlinePaint = new SKPaint
+            {
+                Style = SKPaintStyle.Stroke,
+                StrokeWidth = (float)Math.Max(0.5, options.OutlineSize * refScale),
+                StrokeJoin = SKStrokeJoin.Round,
+                Color = SKColors.Black,
+                IsAntialias = true,
+                IsAutohinted = true,
+                LcdRenderText = true,
+                SubpixelText = true
+            };
+            using var nameFont = new SKPaint
+            {
+                Typeface = nameTypeface,
+                TextSize = (float)Math.Max(6, options.EffectiveUsernameFontSize),
+                IsAntialias = true,
+                IsAutohinted = true,
+                LcdRenderText = true,
+                SubpixelText = true
+            };
+            using var msgFont = new SKPaint
+            {
+                Typeface = msgTypeface,
+                TextSize = (float)Math.Max(6, options.FontSize),
+                Color = options.MessageColor,
+                IsAntialias = true,
+                IsAutohinted = true,
+                LcdRenderText = true,
+                SubpixelText = true
+            };
+
+            SKRect sampleBounds = new();
+            msgFont.MeasureText("ABC123", ref sampleBounds);
+            int sectionHeight = Math.Max(10, options.SectionHeight);
+            int textBaselineOffset = (int)(((sectionHeight - sampleBounds.Height) / 2.0) + sampleBounds.Height);
+
+            SKRect userBounds = new();
+            nameFont.MeasureText("ABC123", ref userBounds);
+            int userBaselineOffset = (int)(((sectionHeight - userBounds.Height) / 2.0) + userBounds.Height);
+
+            int sidePadding = Math.Max(2, options.SidePadding);
+            int verticalPadding = Math.Max(2, options.VerticalPadding);
+            int wordSpacing = Math.Max(2, options.WordSpacing);
+
+            ReadOnlySpan<(string Time, string User, SKColor Color, string Message, bool IsSub, bool HasEmote)> sampleRows =
+            [
+                ("1:24", "StreamFan", new SKColor(0xFF1E90FF), "PogChamp nice render!", false, true),
+                ("1:25", "Nightbot", new SKColor(0xFF00FF7F), "Welcome to the chat!", false, false),
+                ("1:26", "VIP_Viewer", new SKColor(0xFFFF69B4), options.SubMessages ? "subscribed at Tier 1!" : "Let's go!!", options.SubMessages, false)
+            ];
+
+            int cursorY = previewHeight;
+            for (int i = sampleRows.Length - 1; i >= 0; i--)
+            {
+                var row = sampleRows[i];
+                cursorY -= sectionHeight + verticalPadding;
+                if (cursorY < -sectionHeight)
+                {
+                    break;
+                }
+
+                SKColor rowBg = options.BackgroundColor;
+                if (options.AlternateMessageBackgrounds && (i & 1) == 1)
+                {
+                    rowBg = options.AlternateBackgroundColor;
+                    using var altPaint = new SKPaint { Color = rowBg, BlendMode = SKBlendMode.SrcOver };
+                    canvas.DrawRect(0, cursorY - verticalPadding / 2f, previewWidth, sectionHeight + verticalPadding, altPaint);
+                }
+
+                int drawX = sidePadding;
+                if (row.IsSub)
+                {
+                    using var subBgPaint = new SKPaint { Color = new SKColor(0x286B6B6E) };
+                    canvas.DrawRect(sidePadding, cursorY, previewWidth - sidePadding * 2, sectionHeight, subBgPaint);
+                    using var accentPaint = new SKPaint { Color = Purple };
+                    canvas.DrawRect(sidePadding, cursorY, Math.Max(2, options.AccentStrokeWidth), sectionHeight, accentPaint);
+                    drawX += Math.Max(6, options.AccentIndentWidth);
+                }
+
+                int msgY = cursorY + textBaselineOffset;
+                int userY = cursorY + userBaselineOffset;
+
+                if (options.Timestamp && !row.IsSub)
+                {
+                    DrawPreviewString(canvas, row.Time, drawX, msgY, msgFont, outlinePaint, options.Outline);
+                    drawX += (int)msgFont.MeasureText(row.Time) + wordSpacing * 2;
+                }
+
+                if (options.RenderUserAvatars && !row.IsSub)
+                {
+                    int avatarDiameter = Math.Max(8, (int)Math.Round(36 * refScale * options.AvatarScale));
+                    float avatarRadius = avatarDiameter / 2f;
+                    float avatarCenterY = cursorY + sectionHeight / 2f;
+                    using var avatarPaint = new SKPaint { Color = row.Color, IsAntialias = true };
+                    canvas.DrawCircle(drawX + avatarRadius, avatarCenterY, avatarRadius, avatarPaint);
+                    drawX += avatarDiameter + wordSpacing;
+                }
+
+                if (options.ChatBadges && !row.IsSub)
+                {
+                    int badgeSize = Math.Max(6, (int)Math.Round(36 * refScale * options.BadgeScale));
+                    float badgeTop = cursorY + (sectionHeight - badgeSize) / 2f;
+                    using var badgePaint = new SKPaint { Color = i == 0 ? Purple : new SKColor(0xFF00AD03), IsAntialias = true };
+                    canvas.DrawRoundRect(drawX, badgeTop, badgeSize, badgeSize, 3f, 3f, badgePaint);
+                    drawX += badgeSize + Math.Max(1, wordSpacing / 2);
+                }
+
+                SKColor userColor = row.Color;
+                if (options.AdjustUsernameVisibility && (options.Outline || rowBg.Alpha >= 128))
+                {
+                    userColor = AdjustColorVisibility(userColor, options.Outline ? SKColors.Black : rowBg);
+                }
+                nameFont.Color = userColor;
+
+                string userLabel = row.IsSub ? row.User : row.User + ":";
+                DrawPreviewString(canvas, userLabel, drawX, userY, nameFont, outlinePaint, options.Outline);
+                drawX += (int)nameFont.MeasureText(userLabel) + wordSpacing;
+
+                if (row.HasEmote)
+                {
+                    int emoteSize = Math.Max(8, (int)Math.Round(28 * refScale * options.EmoteScale));
+                    float emoteTop = cursorY + (sectionHeight - emoteSize) / 2f;
+                    using var emotePaint = new SKPaint { Color = new SKColor(0xFFFFB800), IsAntialias = true };
+                    canvas.DrawCircle(drawX + emoteSize / 2f, emoteTop + emoteSize / 2f, emoteSize / 2f, emotePaint);
+                    drawX += emoteSize + Math.Max(2, options.EmoteSpacing);
+                    DrawPreviewString(canvas, "nice render!", drawX, msgY, msgFont, outlinePaint, options.Outline);
+                }
+                else
+                {
+                    DrawPreviewString(canvas, row.Message, drawX, msgY, msgFont, outlinePaint, options.Outline);
+                }
+            }
+
+            return bitmap;
+
+            static void DrawPreviewString(SKCanvas c, string text, int x, int y, SKPaint font, SKPaint outline, bool drawOutline)
+            {
+                if (drawOutline)
+                {
+                    using var path = font.GetTextPath(text, x, y);
+                    c.DrawPath(path, outline);
+                }
+                c.DrawText(text, x, y, font);
+            }
+        }
+
         private void RenderVideoSegment(
             int workerId,
             int totalWorkers,
@@ -810,14 +1175,22 @@ namespace TwitchDownloaderCore
                 FullMode = BoundedChannelFullMode.Wait
             });
 
+            using var cancelReg = cancellationToken.Register(() =>
+            {
+                try { if (!ffmpegProcess.HasExited) ffmpegProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                try { if (maskProcess is { HasExited: false }) maskProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            });
+
             var pipeWriterTask = Task.Run(async () =>
             {
-                await foreach (var item in frameChannel.Reader.ReadAllAsync(cancellationToken))
+                await foreach (var item in frameChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
                 {
                     try
                     {
                         for (int r = 0; r < item.RepeatCount; r++)
                         {
+                            cancellationToken.ThrowIfCancellationRequested();
+
                             if (!renderOptions.SkipDriveWaiting)
                             {
                                 DriveHelper.WaitForDrive(outputDrive, _progress);
@@ -972,15 +1345,23 @@ namespace TwitchDownloaderCore
                     long doneTicks = Interlocked.Increment(ref completedTicks);
                     if (doneTicks % (totalWorkers > 1 ? 12 : 3) == 0 && totalRenderTicks > 0)
                     {
-                        var percent = doneTicks / (double)totalRenderTicks * 100;
-                        if (percent > 0)
+                        long elapsedMs = stopwatch.ElapsedMilliseconds;
+                        long prevReportMs = Volatile.Read(ref _lastProgressReportMs);
+                        if (elapsedMs - prevReportMs >= 100 || doneTicks >= totalRenderTicks)
                         {
-                            var elapsed = stopwatch.Elapsed;
-                            var elapsedSeconds = elapsed.TotalSeconds;
-                            var secondsLeft = unchecked((int)(100 / percent * elapsedSeconds - elapsedSeconds));
-                            lock (_progressLock)
+                            Interlocked.Exchange(ref _lastProgressReportMs, elapsedMs);
+                            var percent = doneTicks / (double)totalRenderTicks * 100;
+                            if (percent > 0)
                             {
-                                _progress.ReportProgress((int)Math.Round(percent), elapsed, TimeSpan.FromSeconds(Math.Max(0, secondsLeft)));
+                                var elapsedSeconds = elapsedMs / 1000.0;
+                                var secondsLeft = unchecked((int)(100 / percent * elapsedSeconds - elapsedSeconds));
+                                lock (_progressLock)
+                                {
+                                    _progress.ReportProgress(
+                                        (int)Math.Round(percent),
+                                        TimeSpan.FromSeconds((long)elapsedSeconds),
+                                        TimeSpan.FromSeconds(Math.Max(0, secondsLeft)));
+                                }
                             }
                         }
                     }
@@ -994,6 +1375,24 @@ namespace TwitchDownloaderCore
 
                 frameChannel.Writer.Complete();
                 pipeWriterTask.GetAwaiter().GetResult();
+
+                ffmpegStream.Dispose();
+                maskStream?.Dispose();
+
+                WaitForFfmpegExit(ffmpegProcess, cancellationToken);
+                if (maskProcess != null)
+                {
+                    WaitForFfmpegExit(maskProcess, cancellationToken);
+                }
+
+                if (ffmpegProcess.HasExited && ffmpegProcess.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"FFmpeg process for segment {workerId} exited with code {ffmpegProcess.ExitCode}.");
+                }
+                if (maskProcess != null && maskProcess.HasExited && maskProcess.ExitCode != 0)
+                {
+                    throw new InvalidOperationException($"FFmpeg mask process for segment {workerId} exited with code {maskProcess.ExitCode}.");
+                }
             }
             catch
             {
@@ -1006,6 +1405,8 @@ namespace TwitchDownloaderCore
                     }
                 }
                 frameChannel.Writer.TryComplete();
+                try { if (!ffmpegProcess.HasExited) ffmpegProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                try { if (maskProcess is { HasExited: false }) maskProcess.Kill(entireProcessTree: true); } catch { /* ignore */ }
                 try { pipeWriterTask.GetAwaiter().GetResult(); } catch { /* propagate primary exception */ }
                 throw;
             }
@@ -1020,26 +1421,45 @@ namespace TwitchDownloaderCore
                     ArrayPool<byte>.Shared.Return(cachedAnimYuvBuffer);
                 }
 
+                try { ffmpegStream?.Dispose(); } catch { /* ignore */ }
+                try { maskStream?.Dispose(); } catch { /* ignore */ }
+
                 latestUpdate?.Canvas?.Dispose();
                 latestUpdate?.Image?.Dispose();
                 latestUpdate?.Comments?.ForEach(x => x.Image.Dispose());
                 _imageBudget.UnregisterWorker(workerId);
             }
+        }
 
-            ffmpegStream.Dispose();
-            maskStream?.Dispose();
-
-            ffmpegProcess.WaitForExit(100_000);
-            maskProcess?.WaitForExit(100_000);
-
-            if (ffmpegProcess.HasExited && ffmpegProcess.ExitCode != 0)
+        private static void WaitForFfmpegExit(FfmpegProcess process, CancellationToken cancellationToken)
+        {
+            if (process is null)
             {
-                throw new InvalidOperationException($"FFmpeg process for segment {workerId} exited with code {ffmpegProcess.ExitCode}.");
+                return;
             }
-            if (maskProcess != null && maskProcess.HasExited && maskProcess.ExitCode != 0)
+
+            const int pollMs = 200;
+            const int maxWaitMs = 120_000;
+            int waitedMs = 0;
+
+            while (!process.WaitForExit(pollMs))
             {
-                throw new InvalidOperationException($"FFmpeg mask process for segment {workerId} exited with code {maskProcess.ExitCode}.");
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                waitedMs += pollMs;
+                if (waitedMs >= maxWaitMs)
+                {
+                    try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                    throw new TimeoutException($"FFmpeg process did not exit within {maxWaitMs / 1000}s after closing input stream.");
+                }
             }
+
+            // Ensure asynchronous stdout/stderr reader callbacks have flushed.
+            process.WaitForExit();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1162,6 +1582,7 @@ namespace TwitchDownloaderCore
             if (!inputArgs.Contains("{pix_fmt}", StringComparison.Ordinal)
                 || inputArgs.Contains("-vf ", StringComparison.OrdinalIgnoreCase)
                 || outputArgs.Contains("-vf ", StringComparison.OrdinalIgnoreCase)
+                || inputArgs.Contains("-filter_complex", StringComparison.OrdinalIgnoreCase)
                 || outputArgs.Contains("-filter_complex", StringComparison.OrdinalIgnoreCase))
             {
                 return PipePixelFormat.BgraOrRgba;
@@ -1405,6 +1826,7 @@ namespace TwitchDownloaderCore
             _progress.LogVerbose($"Running \"{renderOptions.FfmpegPath}\" in \"{process.StartInfo.WorkingDirectory}\" with args: {process.StartInfo.Arguments}");
 
             process.Start();
+            RegisterActiveProcess(process);
             process.BeginErrorReadLine();
             process.BeginOutputReadLine();
 
@@ -1420,7 +1842,10 @@ namespace TwitchDownloaderCore
         {
             if (string.IsNullOrWhiteSpace(outputArgs)
                 || !outputArgs.Contains("libvpx-vp9", StringComparison.OrdinalIgnoreCase)
-                || !outputArgs.Contains("realtime", StringComparison.OrdinalIgnoreCase))
+                || outputArgs.Contains("-deadline best", StringComparison.OrdinalIgnoreCase)
+                || outputArgs.Contains("-deadline good", StringComparison.OrdinalIgnoreCase)
+                || outputArgs.Contains("-quality best", StringComparison.OrdinalIgnoreCase)
+                || outputArgs.Contains("-quality good", StringComparison.OrdinalIgnoreCase))
             {
                 return outputArgs;
             }
@@ -1429,9 +1854,27 @@ namespace TwitchDownloaderCore
             var threadsPerJob = parallelJobs > 1
                 ? Math.Clamp(Environment.ProcessorCount / parallelJobs, 2, 16)
                 : Math.Clamp(Environment.ProcessorCount, 4, 16);
-            optimized = FfmpegZeroThreadsRegex.Replace(optimized, $"-threads {threadsPerJob}");
+
+            if (FfmpegThreadsRegex.IsMatch(optimized))
+            {
+                optimized = FfmpegThreadsRegex.Replace(optimized, $"-threads {threadsPerJob}");
+            }
 
             var extraFlags = new StringBuilder();
+            if (!optimized.Contains("-deadline", StringComparison.OrdinalIgnoreCase)
+                && !optimized.Contains("-quality", StringComparison.OrdinalIgnoreCase))
+            {
+                extraFlags.Append(" -deadline realtime");
+            }
+            if (!optimized.Contains("-cpu-used", StringComparison.OrdinalIgnoreCase)
+                && !optimized.Contains("-speed", StringComparison.OrdinalIgnoreCase))
+            {
+                extraFlags.Append(" -cpu-used 8");
+            }
+            if (!optimized.Contains("-threads", StringComparison.OrdinalIgnoreCase))
+            {
+                extraFlags.Append($" -threads {threadsPerJob}");
+            }
             if (!optimized.Contains("-row-mt", StringComparison.OrdinalIgnoreCase))
             {
                 extraFlags.Append(" -row-mt 1");

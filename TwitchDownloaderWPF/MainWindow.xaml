@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Chat Render" MinHeight="460" Height="490" MinWidth="750" Width="875" Loaded="Window_Loaded">
+        Title="Chat Render" MinHeight="500" Height="550" MinWidth="850" Width="960" Loaded="Window_Loaded" Closing="Window_Closing">
     <Grid Background="{DynamicResource AppBackground}">
         <Frame Focusable="False" x:Name="Main" NavigationUIVisibility="Hidden" Background="{DynamicResource AppBackground}" BorderBrush="{DynamicResource AppBackground}"/>
     </Grid>

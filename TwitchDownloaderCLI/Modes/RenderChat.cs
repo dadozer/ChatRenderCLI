@@ -20,9 +20,28 @@ namespace TwitchDownloaderCLI.Modes
             var collisionHandler = new FileCollisionHandler(inputOptions, progress);
             var renderOptions = GetRenderOptions(inputOptions, collisionHandler, progress);
 
-            using var chatRenderer = new ChatRenderer(renderOptions, progress);
-            chatRenderer.ParseJsonAsync().Wait();
-            chatRenderer.RenderVideoAsync(new CancellationToken()).Wait();
+            using var cts = new CancellationTokenSource();
+            ConsoleCancelEventHandler cancelHandler = (_, e) =>
+            {
+                e.Cancel = true;
+                try { cts.Cancel(); } catch { }
+            };
+            Console.CancelKeyPress += cancelHandler;
+
+            try
+            {
+                using var chatRenderer = new ChatRenderer(renderOptions, progress);
+                chatRenderer.ParseJsonAsync(cts.Token).GetAwaiter().GetResult();
+                chatRenderer.RenderVideoAsync(cts.Token).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                progress.LogInfo("Render canceled by user.");
+            }
+            finally
+            {
+                Console.CancelKeyPress -= cancelHandler;
+            }
         }
 
         private static ChatRenderOptions GetRenderOptions(ChatRenderArgs inputOptions, FileCollisionHandler collisionHandler, ITaskLogger logger)

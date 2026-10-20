@@ -108,22 +108,28 @@ namespace TwitchDownloaderWPF.Utils
         {
             lock (_writeLock)
             {
-                if (_lastPercent == percent && _lastTime1 == time1 && _lastTime2 == time2)
+                var roundedTime1 = TimeSpan.FromSeconds((long)time1.TotalSeconds);
+                var roundedTime2 = TimeSpan.FromSeconds((long)time2.TotalSeconds);
+                if (_lastPercent == percent && _lastTime1 == roundedTime1 && _lastTime2 == roundedTime2)
                 {
                     return;
                 }
 
-                _handlePercent(percent);
-                _lastPercent = percent;
-                _lastTime1 = time1;
-                _lastTime2 = time2;
+                if (_lastPercent != percent)
+                {
+                    _handlePercent(percent);
+                    _lastPercent = percent;
+                }
+
+                _lastTime1 = roundedTime1;
+                _lastTime2 = roundedTime2;
 
                 if (!_statusIsTemplate)
                 {
                     return;
                 }
 
-                var status = string.Format(_status, percent, time1, time2);
+                var status = string.Format(_status, percent, roundedTime1, roundedTime2);
                 _handleStatus?.Invoke(status);
             }
         }

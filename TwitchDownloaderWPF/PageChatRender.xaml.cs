@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using TwitchDownloaderCore;
@@ -35,10 +36,36 @@ namespace TwitchDownloaderWPF
         public SKFontManager fontManager = SKFontManager.CreateDefault();
         public string[] FileNames = [];
         private CancellationTokenSource _cancellationTokenSource;
+        private WriteableBitmap _previewBitmap;
+        private bool _isLoadingSettings;
+        private int _pendingPercent = -1;
+        private string _pendingStatus;
 
         public PageChatRender()
         {
             InitializeComponent();
+        }
+
+        private static SKFontStyle ParseFontStyle(string style)
+        {
+            return style?.Trim().ToLowerInvariant() switch
+            {
+                "bold" => SKFontStyle.Bold,
+                "italic" or "italics" => SKFontStyle.Italic,
+                "bolditalic" or "bolditalics" => SKFontStyle.BoldItalic,
+                _ => SKFontStyle.Normal
+            };
+        }
+
+        private static string NormalizeFontStyleName(string style)
+        {
+            return style?.Trim().ToLowerInvariant() switch
+            {
+                "bold" => "Bold",
+                "italic" or "italics" => "Italic",
+                "bolditalic" or "bolditalics" => "BoldItalic",
+                _ => "Normal"
+            };
         }
 
         private void btnBrowse_Click(object sender, RoutedEventArgs e)
@@ -115,16 +142,19 @@ namespace TwitchDownloaderWPF
                 ParallelJobs = (int)numParallelJobs.Value,
                 InputArgs = CheckRenderSharpening.IsChecked == true ? textFfmpegInput.Text + " -filter_complex \"smartblur=lr=1:ls=-1.0\"" : textFfmpegInput.Text,
                 OutputArgs = textFfmpegOutput.Text,
-                MessageFontStyle = SKFontStyle.Normal,
+                MessageFontStyle = ParseFontStyle(comboFontStyle.SelectedItem as string),
                 UsernameFontStyle = SKFontStyle.Bold,
                 GenerateMask = checkMask.IsChecked.GetValueOrDefault(),
                 OutlineSize = 4 * double.Parse(textOutlineScale.Text, CultureInfo.CurrentCulture),
-                FfmpegPath = "ffmpeg",
+                FfmpegPath = File.Exists("ffmpeg.exe") ? Path.GetFullPath("ffmpeg.exe") : "ffmpeg",
                 TempFolder = Settings.Default.TempPath,
                 SubMessages = checkSub.IsChecked.GetValueOrDefault(),
                 ChatBadges = checkBadge.IsChecked.GetValueOrDefault(),
                 Offline = checkOffline.IsChecked.GetValueOrDefault(),
                 RenderUserAvatars = checkRenderAvatars.IsChecked.GetValueOrDefault(),
+                GiphyGifs = checkGiphyGifs.IsChecked.GetValueOrDefault(),
+                GifMaxHeightPercent = Math.Clamp(int.Parse(textGifMaxHeight.Text), 1, 100),
+                ImageCacheMb = Math.Max(16, int.Parse(textImageCacheMb.Text)),
                 AllowUnlistedEmotes = true,
                 DisperseCommentOffsets = checkDispersion.IsChecked.GetValueOrDefault(),
                 AdjustUsernameVisibility = checkAdjustUsernameVisibility.IsChecked.GetValueOrDefault(),
@@ -145,6 +175,7 @@ namespace TwitchDownloaderWPF
 
         private void LoadSettings()
         {
+            _isLoadingSettings = true;
             try
             {
                 comboFont.SelectedItem = Settings.Default.Font;
@@ -158,6 +189,7 @@ namespace TwitchDownloaderWPF
                 textHeight.Text = Settings.Default.Height.ToString();
                 textWidth.Text = Settings.Default.Width.ToString();
                 numFontSize.Value = Settings.Default.FontSize;
+                comboFontStyle.SelectedItem = NormalizeFontStyleName(Settings.Default.FontStyle);
                 textUpdateTime.Text = Settings.Default.UpdateTime.ToString("0.0#");
                 colorFont.SelectedColor = System.Windows.Media.Color.FromRgb(Settings.Default.FontColorR, Settings.Default.FontColorG, Settings.Default.FontColorB);
                 textFramerate.Text = Settings.Default.Framerate.ToString();
@@ -185,6 +217,9 @@ namespace TwitchDownloaderWPF
                 textBannedWordsList.Text = Settings.Default.BannedWordsList;
                 checkOffline.IsChecked = Settings.Default.Offline;
                 checkRenderAvatars.IsChecked = Settings.Default.RenderUserAvatars;
+                checkGiphyGifs.IsChecked = Settings.Default.GiphyGifs;
+                textGifMaxHeight.Text = Settings.Default.GifMaxHeightPercent.ToString();
+                textImageCacheMb.Text = Settings.Default.ImageCacheMb.ToString();
                 checkDispersion.IsChecked = Settings.Default.DisperseCommentOffsets;
                 checkAlternateMessageBackgrounds.IsChecked = Settings.Default.AlternateMessageBackgrounds;
                 checkAdjustUsernameVisibility.IsChecked = Settings.Default.AdjustUsernameVisibility;
@@ -225,6 +260,11 @@ namespace TwitchDownloaderWPF
                 LoadFfmpegArgs();
             }
             catch { }
+            finally
+            {
+                _isLoadingSettings = false;
+                UpdateLivePreview();
+            }
         }
 
         private void Hyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)
@@ -263,6 +303,7 @@ namespace TwitchDownloaderWPF
         public void SaveSettings()
         {
             Settings.Default.Font = comboFont.SelectedItem.ToString();
+            Settings.Default.FontStyle = NormalizeFontStyleName(comboFontStyle.SelectedItem as string);
             Settings.Default.Outline = checkOutline.IsChecked.GetValueOrDefault();
             Settings.Default.Timestamp = checkTimestamp.IsChecked.GetValueOrDefault();
             Settings.Default.BackgroundColorR = colorBackground.SelectedColor.GetValueOrDefault().R;
@@ -285,6 +326,7 @@ namespace TwitchDownloaderWPF
             Settings.Default.ChatBadges = checkBadge.IsChecked.GetValueOrDefault();
             Settings.Default.Offline = checkOffline.IsChecked.GetValueOrDefault();
             Settings.Default.RenderUserAvatars = checkRenderAvatars.IsChecked.GetValueOrDefault();
+            Settings.Default.GiphyGifs = checkGiphyGifs.IsChecked.GetValueOrDefault();
             Settings.Default.DisperseCommentOffsets = checkDispersion.IsChecked.GetValueOrDefault();
             Settings.Default.AlternateMessageBackgrounds = checkAlternateMessageBackgrounds.IsChecked.GetValueOrDefault();
             Settings.Default.AdjustUsernameVisibility = checkAdjustUsernameVisibility.IsChecked.GetValueOrDefault();
@@ -327,6 +369,8 @@ namespace TwitchDownloaderWPF
                 Settings.Default.UpdateTime = double.Parse(textUpdateTime.Text, CultureInfo.CurrentCulture);
                 Settings.Default.Framerate = int.Parse(textFramerate.Text);
                 Settings.Default.ParallelJobs = (int)numParallelJobs.Value;
+                Settings.Default.GifMaxHeightPercent = Math.Clamp(int.Parse(textGifMaxHeight.Text), 1, 100);
+                Settings.Default.ImageCacheMb = Math.Max(16, int.Parse(textImageCacheMb.Text));
                 Settings.Default.EmoteScale = double.Parse(textEmoteScale.Text, CultureInfo.CurrentCulture);
                 Settings.Default.EmojiScale = double.Parse(textEmojiScale.Text, CultureInfo.CurrentCulture);
                 Settings.Default.BadgeScale = double.Parse(textBadgeScale.Text, CultureInfo.CurrentCulture);
@@ -367,6 +411,18 @@ namespace TwitchDownloaderWPF
                 _ = int.Parse(textWidth.Text);
                 _ = double.Parse(textUpdateTime.Text, CultureInfo.CurrentCulture);
                 _ = int.Parse(textFramerate.Text);
+                int gifMaxHeight = int.Parse(textGifMaxHeight.Text);
+                if (gifMaxHeight is < 1 or > 100)
+                {
+                    AppendLog(Translations.Strings.ErrorLog + "GIF Max Height (%) must be between 1 and 100.");
+                    return false;
+                }
+                int imageCacheMb = int.Parse(textImageCacheMb.Text);
+                if (imageCacheMb < 16)
+                {
+                    AppendLog(Translations.Strings.ErrorLog + "Image Cache (MB) must be at least 16.");
+                    return false;
+                }
                 _ = double.Parse(textEmoteScale.Text, CultureInfo.CurrentCulture);
                 _ = double.Parse(textBadgeScale.Text, CultureInfo.CurrentCulture);
                 _ = double.Parse(textEmojiScale.Text, CultureInfo.CurrentCulture);
@@ -414,16 +470,32 @@ namespace TwitchDownloaderWPF
 
         private void SetPercent(int percent)
         {
-            Dispatcher.BeginInvoke(() =>
-                statusProgressBar.Value = percent
-            );
+            if (Interlocked.Exchange(ref _pendingPercent, percent) == -1)
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    int val = Interlocked.Exchange(ref _pendingPercent, -1);
+                    if (val >= 0)
+                    {
+                        statusProgressBar.Value = val;
+                    }
+                });
+            }
         }
 
         private void SetStatus(string message)
         {
-            Dispatcher.BeginInvoke(() =>
-                statusMessage.Text = message
-            );
+            if (Interlocked.Exchange(ref _pendingStatus, message) is null)
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    string msg = Interlocked.Exchange(ref _pendingStatus, null);
+                    if (msg is not null)
+                    {
+                        statusMessage.Text = msg;
+                    }
+                });
+            }
         }
 
         private void AppendLog(string message)
@@ -472,6 +544,12 @@ namespace TwitchDownloaderWPF
             }
             comboFont.SelectedItem = "Inter Embedded";
 
+            comboFontStyle.Items.Add("Normal");
+            comboFontStyle.Items.Add("Bold");
+            comboFontStyle.Items.Add("Italic");
+            comboFontStyle.Items.Add("BoldItalic");
+            comboFontStyle.SelectedItem = "Normal";
+
             Codec h264Codec = new Codec() { Name = "H264", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v libx264 -preset:v veryfast -crf 18 -pix_fmt yuv420p \"{save_path}\"" };
             Codec h264NvencCodec = new Codec() { Name = "H264 NVIDIA", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v h264_nvenc -preset:v p4 -cq 20 -pix_fmt yuv420p \"{save_path}\"" };
             Codec h264AmfCodec = new Codec() { Name = "H264 AMD", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v h264_amf -preset:v p4 -cq 20 -pix_fmt yuv420p \"{save_path}\"" };
@@ -479,7 +557,7 @@ namespace TwitchDownloaderWPF
             Codec h265NvencCodec = new Codec() { Name = "H265 NVIDIA", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v hevc_nvenc -preset:v p4 -cq 21 -pix_fmt yuv420p \"{save_path}\"" };
             Codec h265AmfCodec = new Codec() { Name = "H265 AMD", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v hevc_amf -preset:v p4 -cq 21 -pix_fmt yuv420p \"{save_path}\"" };
             Codec vp8Codec = new Codec() { Name = "VP8", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v libvpx -crf 18 -b:v 2M -pix_fmt yuva420p -auto-alt-ref 0 \"{save_path}\"" };
-            Codec vp9Codec = new Codec() { Name = "VP9", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v libvpx-vp9 -crf 18 -b:v 2M -deadline realtime -quality realtime -speed 4 -row-mt 1 -threads 4 -pix_fmt yuva420p \"{save_path}\"" };
+            Codec vp9Codec = new Codec() { Name = "VP9", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v libvpx-vp9 -crf 18 -b:v 2M -deadline realtime -cpu-used 8 -row-mt 1 -threads 0 -pix_fmt yuva420p \"{save_path}\"" };
             Codec rleCodec = new Codec() { Name = "RLE", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v qtrle -pix_fmt argb \"{save_path}\"" };
             Codec proresCodec = new Codec() { Name = "ProRes", InputArgs = "-framerate {fps} -f rawvideo -analyzeduration {max_int} -probesize {max_int} -pix_fmt {pix_fmt} -video_size {width}x{height} -i -", OutputArgs = "-c:v prores_ks -qscale:v 62 -pix_fmt argb \"{save_path}\"" };
             VideoContainer mp4Container = new VideoContainer() { Name = "MP4", SupportedCodecs = [h264Codec, h265Codec, h264NvencCodec, h265NvencCodec, h264AmfCodec, h265AmfCodec] };
@@ -500,12 +578,23 @@ namespace TwitchDownloaderWPF
             comboBadges.Items.Add(new CheckComboBoxItem { Content = Translations.Strings.BadgeMaskTwitchPrime, Tag = ChatBadgeType.PrimeGaming });
             comboBadges.Items.Add(new CheckComboBoxItem { Content = Translations.Strings.BadgeMaskOthers, Tag = ChatBadgeType.Other });
 
+            HookPreviewEvents();
             LoadSettings();
         }
 
         private void Page_Unloaded(object sender, RoutedEventArgs e)
         {
+            CancelActiveRender();
             SaveSettings();
+        }
+
+        public void CancelActiveRender()
+        {
+            try
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+            catch (ObjectDisposedException) { }
         }
 
         private void btnDonate_Click(object sender, RoutedEventArgs e)
@@ -570,23 +659,45 @@ namespace TwitchDownloaderWPF
         private void LoadFfmpegArgs()
         {
             List<CustomFfmpegArgs> args = JsonSerializer.Deserialize<List<CustomFfmpegArgs>>(Settings.Default.FfmpegArguments);
+            Codec selectedCodec = (Codec)comboCodec.SelectedItem;
+            VideoContainer selectedContainer = (VideoContainer)comboFormat.SelectedItem;
 
             bool foundArg = false;
+            bool migrated = false;
             foreach (CustomFfmpegArgs arg in args)
             {
-                if (arg.CodecName == ((Codec)comboCodec.SelectedItem).Name && arg.ContainerName == ((VideoContainer)comboFormat.SelectedItem).Name)
+                if (arg.InputArgs != null && arg.InputArgs.Contains("-pix_fmt bgra", StringComparison.OrdinalIgnoreCase))
+                {
+                    arg.InputArgs = arg.InputArgs.Replace("-pix_fmt bgra", "-pix_fmt {pix_fmt}", StringComparison.OrdinalIgnoreCase);
+                    migrated = true;
+                }
+
+                if (arg.CodecName == "VP9" && (
+                    arg.OutputArgs == "-c:v libvpx-vp9 -crf 18 -b:v 2M -pix_fmt yuva420p \"{save_path}\"" ||
+                    arg.OutputArgs == "-c:v libvpx-vp9 -crf 18 -b:v 2M -deadline realtime -quality realtime -speed 4 -row-mt 1 -threads 4 -pix_fmt yuva420p \"{save_path}\""))
+                {
+                    arg.OutputArgs = "-c:v libvpx-vp9 -crf 18 -b:v 2M -deadline realtime -cpu-used 8 -row-mt 1 -threads 0 -pix_fmt yuva420p \"{save_path}\"";
+                    migrated = true;
+                }
+
+                if (arg.CodecName == selectedCodec.Name && arg.ContainerName == selectedContainer.Name)
                 {
                     textFfmpegInput.Text = arg.InputArgs;
                     textFfmpegOutput.Text = arg.OutputArgs;
                     foundArg = true;
-                    break;
                 }
+            }
+
+            if (migrated)
+            {
+                Settings.Default.FfmpegArguments = JsonSerializer.Serialize(args);
+                Settings.Default.Save();
             }
 
             if (!foundArg)
             {
-                textFfmpegInput.Text = ((Codec)comboCodec.SelectedItem).InputArgs;
-                textFfmpegOutput.Text = ((Codec)comboCodec.SelectedItem).OutputArgs;
+                textFfmpegInput.Text = selectedCodec.InputArgs;
+                textFfmpegOutput.Text = selectedCodec.OutputArgs;
             }
         }
 
@@ -642,7 +753,7 @@ namespace TwitchDownloaderWPF
 
                         AppendLog($"[{i + 1}/{FileNames.Length}] Rendering {Path.GetFileName(inputFile)} -> {Path.GetFileName(outputFile)}");
                         ChatRenderOptions batchOptions = GetOptions(outputFile, inputFile);
-                        var batchProgress = new WpfTaskProgress((LogLevel)Settings.Default.LogLevels, SetPercent, msg => SetStatus($"[{i + 1}/{FileNames.Length}] {msg}"), AppendLog, s => ffmpegLog.Add(s));
+                        var batchProgress = new WpfTaskProgress((LogLevel)Settings.Default.LogLevels, SetPercent, msg => SetStatus($"[{i + 1}/{FileNames.Length}] {msg}"), AppendLog, s => { lock (ffmpegLog) ffmpegLog.Add(s); });
 
                         using ChatRenderer batchRender = new ChatRenderer(batchOptions, batchProgress);
                         await batchRender.ParseJsonAsync(_cancellationTokenSource.Token);
@@ -692,7 +803,7 @@ namespace TwitchDownloaderWPF
 
             ChatRenderOptions options = GetOptions(saveFileDialog.FileName);
 
-            var renderProgress = new WpfTaskProgress((LogLevel)Settings.Default.LogLevels, SetPercent, SetStatus, AppendLog, s => ffmpegLog.Add(s));
+            var renderProgress = new WpfTaskProgress((LogLevel)Settings.Default.LogLevels, SetPercent, SetStatus, AppendLog, s => { lock (ffmpegLog) ffmpegLog.Add(s); });
             ChatRenderer currentRender = new ChatRenderer(options, renderProgress);
             try
             {
@@ -734,12 +845,12 @@ namespace TwitchDownloaderWPF
 
             SetImage("Images/ppOverheat.gif", true);
             statusMessage.Text = Translations.Strings.StatusRendering;
-            ffmpegLog.Clear();
+            lock (ffmpegLog) ffmpegLog.Clear();
             _cancellationTokenSource = new CancellationTokenSource();
             UpdateActionButtons(true);
             try
             {
-                await currentRender.RenderVideoAsync(_cancellationTokenSource.Token);
+                await Task.Run(() => currentRender.RenderVideoAsync(_cancellationTokenSource.Token));
                 renderProgress.SetStatus(Translations.Strings.StatusDone);
                 SetImage("Images/ppHop.gif", true);
             }
@@ -757,7 +868,11 @@ namespace TwitchDownloaderWPF
                 {
                     if (ex.Message.Contains("The pipe has been ended"))
                     {
-                        string errorLog = String.Join('\n', ffmpegLog.TakeLast(20).ToArray());
+                        string errorLog;
+                        lock (ffmpegLog)
+                        {
+                            errorLog = String.Join('\n', ffmpegLog.TakeLast(20).ToArray());
+                        }
                         MessageBox.Show(Application.Current.MainWindow!, errorLog, Translations.Strings.VerboseErrorOutput, MessageBoxButton.OK, MessageBoxImage.Error);
                     }
                     else
@@ -766,12 +881,15 @@ namespace TwitchDownloaderWPF
                     }
                 }
             }
-            renderProgress.ReportProgress(0);
-            _cancellationTokenSource.Dispose();
-            UpdateActionButtons(false);
+            finally
+            {
+                renderProgress.ReportProgress(0);
+                _cancellationTokenSource.Dispose();
+                UpdateActionButtons(false);
 
-            currentRender.Dispose();
-            GC.Collect();
+                currentRender.Dispose();
+                GC.Collect();
+            }
         }
 
         private void BtnCancel_Click(object sender, RoutedEventArgs e)
@@ -829,6 +947,119 @@ namespace TwitchDownloaderWPF
                 return textFfmpegOutput;
 
             return null;
+        }
+
+        private void HookPreviewEvents()
+        {
+            comboFont.SelectionChanged += (_, _) => UpdateLivePreview();
+            comboFontStyle.SelectionChanged += (_, _) => UpdateLivePreview();
+            numFontSize.ValueChanged += (_, _) => UpdateLivePreview();
+            colorFont.SelectedColorChanged += (_, _) => UpdateLivePreview();
+            colorBackground.SelectedColorChanged += (_, _) => UpdateLivePreview();
+            colorAlternateBackground.SelectedColorChanged += (_, _) => UpdateLivePreview();
+            colorHighlightUsers.SelectedColorChanged += (_, _) => UpdateLivePreview();
+
+            RoutedEventHandler checkHandler = (_, _) => UpdateLivePreview();
+            checkOutline.Checked += checkHandler;
+            checkOutline.Unchecked += checkHandler;
+            checkTimestamp.Checked += checkHandler;
+            checkTimestamp.Unchecked += checkHandler;
+            checkSub.Checked += checkHandler;
+            checkSub.Unchecked += checkHandler;
+            checkBadge.Checked += checkHandler;
+            checkBadge.Unchecked += checkHandler;
+            checkRenderAvatars.Checked += checkHandler;
+            checkRenderAvatars.Unchecked += checkHandler;
+            checkAlternateMessageBackgrounds.Checked += checkHandler;
+            checkAlternateMessageBackgrounds.Unchecked += checkHandler;
+            checkAdjustUsernameVisibility.Checked += checkHandler;
+            checkAdjustUsernameVisibility.Unchecked += checkHandler;
+
+            TextChangedEventHandler textHandler = (_, _) => UpdateLivePreview();
+            textEmoteScale.TextChanged += textHandler;
+            textBadgeScale.TextChanged += textHandler;
+            textEmojiScale.TextChanged += textHandler;
+            textAvatarScale.TextChanged += textHandler;
+            textOutlineScale.TextChanged += textHandler;
+            textUsernameScale.TextChanged += textHandler;
+            textVerticalScale.TextChanged += textHandler;
+            textSectionHeightScale.TextChanged += textHandler;
+            textWordSpaceScale.TextChanged += textHandler;
+            textEmoteSpaceScale.TextChanged += textHandler;
+            textAccentStrokeScale.TextChanged += textHandler;
+            textAccentIndentScale.TextChanged += textHandler;
+            textSidePaddingScale.TextChanged += textHandler;
+        }
+
+        private void UpdateLivePreview()
+        {
+            if (!IsInitialized || _isLoadingSettings || imgPreview is null)
+            {
+                return;
+            }
+
+            try
+            {
+                var bg = colorBackground.SelectedColor ?? System.Windows.Media.Color.FromArgb(255, 17, 17, 17);
+                var altBg = colorAlternateBackground.SelectedColor ?? System.Windows.Media.Color.FromArgb(255, 25, 25, 25);
+                var fg = colorFont.SelectedColor ?? System.Windows.Media.Color.FromRgb(255, 255, 255);
+                var hl = colorHighlightUsers.SelectedColor ?? System.Windows.Media.Color.FromArgb(200, 255, 0, 89);
+
+                double ParseScale(string text, double fallback = 1.0) =>
+                    double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out double v) && v > 0.05 && v <= 10.0 ? v : fallback;
+
+                var previewOptions = new ChatRenderOptions
+                {
+                    BackgroundColor = new SKColor(bg.R, bg.G, bg.B, bg.A),
+                    AlternateBackgroundColor = new SKColor(altBg.R, altBg.G, altBg.B, altBg.A),
+                    AlternateMessageBackgrounds = checkAlternateMessageBackgrounds.IsChecked.GetValueOrDefault(),
+                    MessageColor = new SKColor(fg.R, fg.G, fg.B),
+                    HighlightUserColor = new SKColor(hl.R, hl.G, hl.B, hl.A),
+                    Font = (comboFont.SelectedItem as string) ?? "Inter Embedded",
+                    FontSize = Math.Clamp(numFontSize.Value, 6, 48),
+                    MessageFontStyle = ParseFontStyle(comboFontStyle.SelectedItem as string),
+                    UsernameFontStyle = SKFontStyle.Bold,
+                    Outline = checkOutline.IsChecked.GetValueOrDefault(),
+                    OutlineSize = 4 * ParseScale(textOutlineScale.Text),
+                    Timestamp = checkTimestamp.IsChecked.GetValueOrDefault(),
+                    SubMessages = checkSub.IsChecked.GetValueOrDefault(),
+                    ChatBadges = checkBadge.IsChecked.GetValueOrDefault(),
+                    RenderUserAvatars = checkRenderAvatars.IsChecked.GetValueOrDefault(),
+                    AdjustUsernameVisibility = checkAdjustUsernameVisibility.IsChecked.GetValueOrDefault(),
+                    EmoteScale = ParseScale(textEmoteScale.Text),
+                    BadgeScale = ParseScale(textBadgeScale.Text),
+                    EmojiScale = ParseScale(textEmojiScale.Text),
+                    AvatarScale = ParseScale(textAvatarScale.Text),
+                    UsernameFontScale = ParseScale(textUsernameScale.Text),
+                    VerticalSpacingScale = ParseScale(textVerticalScale.Text),
+                    SidePaddingScale = ParseScale(textSidePaddingScale.Text),
+                    SectionHeightScale = ParseScale(textSectionHeightScale.Text),
+                    WordSpacingScale = ParseScale(textWordSpaceScale.Text),
+                    EmoteSpacingScale = ParseScale(textEmoteSpaceScale.Text),
+                    AccentStrokeScale = ParseScale(textAccentStrokeScale.Text),
+                    AccentIndentScale = ParseScale(textAccentIndentScale.Text),
+                };
+
+                const int previewWidth = 240;
+                const int previewHeight = 185;
+                using var skBitmap = ChatRenderer.RenderPreviewBitmap(previewOptions, previewWidth, previewHeight);
+
+                if (_previewBitmap is null || _previewBitmap.PixelWidth != previewWidth || _previewBitmap.PixelHeight != previewHeight)
+                {
+                    _previewBitmap = new WriteableBitmap(previewWidth, previewHeight, 96, 96, PixelFormats.Bgra32, null);
+                    imgPreview.Source = _previewBitmap;
+                }
+
+                _previewBitmap.WritePixels(
+                    new Int32Rect(0, 0, previewWidth, previewHeight),
+                    skBitmap.GetPixels(),
+                    previewWidth * previewHeight * 4,
+                    previewWidth * 4);
+            }
+            catch
+            {
+                // Ignore transient parse states while user is typing
+            }
         }
     }
 

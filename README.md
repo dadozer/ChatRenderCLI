@@ -13,8 +13,8 @@
 - **`ChatRenderCLI.exe`** — A standalone, 100% drop-in compatible command-line renderer for scripts, automated VOD pipelines, and power users.
 - **`ChatRenderGUI.exe`** — A streamlined, single-window Windows WPF desktop application focused exclusively on chat rendering, live previewing, and direct multi-file batch rendering.
 
-Built on **.NET 10**, **SkiaSharp**, and **FFmpeg**, the rendering pipeline has been re-engineered from the ground up to eliminate CPU, memory-bandwidth, and encoder bottlenecks—achieving **10x to 20x faster total render speeds** (and up to **30x+ faster** on high-framerate 60/120 FPS transparent WebM VP9 overlays) while maintaining pixel-accurate visual parity with upstream TwitchDownloader. Built by Gemini 4 Argon.
-
+Built on **.NET 10**, **SkiaSharp**, and **FFmpeg**, the rendering pipeline has been re-engineered from the ground up to eliminate CPU, memory-bandwidth, and encoder bottlenecks—achieving **10x to 20x faster total render speeds** (and up to **30x+ faster** on high-framerate 60/120 FPS transparent WebM VP9 overlays) while maintaining pixel-accurate visual parity with upstream TwitchDownloader.
+Built by Gemini 4 Argon.
 ---
 
 ## 100% Drop-In TwitchDownloader Compatibility

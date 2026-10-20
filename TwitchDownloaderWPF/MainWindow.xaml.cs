@@ -65,6 +65,11 @@ namespace TwitchDownloaderWPF
             }
         }
 
+        private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            pageChatRender?.CancelActiveRender();
+        }
+
         private async void FlashTaskbarIconIfNotForeground(TimeSpan flashDuration)
         {
             var currentWindow = new WindowInteropHelper(this).Handle;

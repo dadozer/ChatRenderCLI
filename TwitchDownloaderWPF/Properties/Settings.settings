@@ -11,6 +11,9 @@
     <Setting Name="FontSize" Type="System.Single" Scope="User">
       <Value Profile="(Default)">24</Value>
     </Setting>
+    <Setting Name="FontStyle" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Normal</Value>
+    </Setting>
     <Setting Name="UsernameFontScale" Type="System.Double" Scope="User">
       <Value Profile="(Default)">1</Value>
     </Setting>
@@ -210,7 +213,7 @@
       <Value Profile="(Default)">1</Value>
     </Setting>
     <Setting Name="DisperseCommentOffsets" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">True</Value>
+      <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="GuiCulture" Type="System.String" Scope="User">
       <Value Profile="(Default)">en-US</Value>
@@ -274,6 +277,15 @@
     </Setting>
     <Setting Name="ParallelJobs" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">0</Value>
+    </Setting>
+    <Setting Name="GiphyGifs" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="GifMaxHeightPercent" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="ImageCacheMb" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">256</Value>
     </Setting>
   </Settings>
 </SettingsFile>

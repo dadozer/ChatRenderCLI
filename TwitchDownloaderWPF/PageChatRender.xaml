@@ -51,13 +51,15 @@
                         <StackPanel Orientation="Vertical" Margin="5,10,5,5">
                             <TextBlock Text="Font:" HorizontalAlignment="Right" Margin="0,5,0,0" Foreground="{DynamicResource AppText}"/>
                             <TextBlock Text="Font Size:" HorizontalAlignment="Right" Margin="0,20,0,0" Foreground="{DynamicResource AppText}"/>
-                            <TextBlock Text="Font Color:" HorizontalAlignment="Right" Margin="0,14,0,0" Foreground="{DynamicResource AppText}"/>
+                            <TextBlock Text="Font Style:" HorizontalAlignment="Right" Margin="0,19,0,0" Foreground="{DynamicResource AppText}"/>
+                            <TextBlock Text="Font Color:" HorizontalAlignment="Right" Margin="0,15,0,0" Foreground="{DynamicResource AppText}"/>
                             <TextBlock Text="Background Color:" HorizontalAlignment="Right" Margin="0,12,0,0" Foreground="{DynamicResource AppText}"/>
                             <TextBlock Text="Alternate Background Color:" HorizontalAlignment="Right" Margin="0,12,0,0" Foreground="{DynamicResource AppText}"/>
                         </StackPanel>
                         <StackPanel Orientation="Vertical" Margin="0,10,0,5">
                             <ComboBox x:Name="comboFont" MinWidth="180" MaxWidth="300" HorizontalAlignment="Left" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                             <hc:NumericUpDown x:Name="numFontSize" Value="12" Width="75" HorizontalAlignment="Left" Margin="0,7,0,0" Minimum="1" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}" />
+                            <ComboBox x:Name="comboFontStyle" MinWidth="120" MaxWidth="200" HorizontalAlignment="Left" Margin="0,7,0,0" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                             <xctk:ColorPicker x:Name="colorFont" SelectedColor="#FFFFFF" Width="50" UsingAlphaChannel="False" Margin="0,5,0,0" HorizontalAlignment="Left" Background="White" BorderBrush="{DynamicResource AppElementInnerBorder}" DropDownBackground="{DynamicResource AppElementInnerBackground}" Foreground="{DynamicResource AppText}" HeaderBackground="{DynamicResource AppElementInnerBackground}" HeaderForeground="{DynamicResource AppText}" TabBackground="{DynamicResource AppElementBorder}" TabForeground="{DynamicResource AppText}"/>
                             <xctk:ColorPicker x:Name="colorBackground" SelectedColor="#111111" Width="50" UsingAlphaChannel="True" Margin="0,5,0,0" HorizontalAlignment="Left" Background="White" BorderBrush="{DynamicResource AppElementInnerBorder}" DropDownBackground="{DynamicResource AppElementInnerBackground}" Foreground="{DynamicResource AppText}" HeaderBackground="{DynamicResource AppElementInnerBackground}" HeaderForeground="{DynamicResource AppText}" TabBackground="{DynamicResource AppElementBorder}" TabForeground="{DynamicResource AppText}"/>
                             <xctk:ColorPicker x:Name="colorAlternateBackground" SelectedColor="#191919" Width="50" UsingAlphaChannel="True" Margin="0,5,0,0" HorizontalAlignment="Left" Background="White" BorderBrush="{DynamicResource AppElementInnerBorder}" DropDownBackground="{DynamicResource AppElementInnerBackground}" Foreground="{DynamicResource AppText}" HeaderBackground="{DynamicResource AppElementInnerBackground}" HeaderForeground="{DynamicResource AppText}" TabBackground="{DynamicResource AppElementBorder}" TabForeground="{DynamicResource AppText}"/>
@@ -95,6 +97,9 @@
                             <TextBlock Text="7TV Emotes:" HorizontalAlignment="Right" Margin="0,6,0,0" Foreground="{DynamicResource AppText}"/>
                             <TextBlock Text="Render Avatars:" HorizontalAlignment="Right" Margin="0,6,0,0" Foreground="{DynamicResource AppText}"/>
                             <TextBlock HorizontalAlignment="Right" Margin="0,6,0,0" Foreground="{DynamicResource AppText}"><Run Text="Offline"/><Hyperlink ToolTipService.ShowDuration="30000" Foreground="{DynamicResource AppHyperlink}"><Hyperlink.ToolTip><Run Text="Avoids making any requests to the internet and strictly uses emotes and badges from the JSON file."/></Hyperlink.ToolTip>(?)</Hyperlink>:</TextBlock>
+                            <TextBlock HorizontalAlignment="Right" Margin="0,6,0,0" Foreground="{DynamicResource AppText}"><Run Text="Giphy GIFs"/><Hyperlink ToolTipService.ShowDuration="30000" Foreground="{DynamicResource AppHyperlink}"><Hyperlink.ToolTip><Run Text="Renders Giphy GIFs posted in chat as full-width animated images (fetched from Giphy when not embedded in the JSON). Unresolved GIFs stay as their bracketed alt text."/></Hyperlink.ToolTip>(?)</Hyperlink>:</TextBlock>
+                            <TextBlock HorizontalAlignment="Right" Margin="0,13,0,0" Foreground="{DynamicResource AppText}"><Run Text="GIF Max Height (%)"/><Hyperlink ToolTipService.ShowDuration="30000" Foreground="{DynamicResource AppHyperlink}"><Hyperlink.ToolTip><Run Text="Cap on the height of a GIF posted in chat, as a percentage of the chat height (1-100). 100 lets one GIF fill the chat."/></Hyperlink.ToolTip>(?)</Hyperlink>:</TextBlock>
+                            <TextBlock HorizontalAlignment="Right" Margin="0,14,0,0" Foreground="{DynamicResource AppText}"><Run Text="Image Cache (MB)"/><Hyperlink ToolTipService.ShowDuration="30000" Foreground="{DynamicResource AppHyperlink}"><Hyperlink.ToolTip><Run Text="Megabytes of off-screen emote and GIF imagery to retain decoded in memory. On-screen images are always kept."/></Hyperlink.ToolTip>(?)</Hyperlink>:</TextBlock>
                         </StackPanel>
                         <StackPanel Orientation="Vertical" Margin="0,10,0,2">
                             <CheckBox x:Name="checkBTTV" HorizontalAlignment="Left" Margin="0,0,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
@@ -102,6 +107,9 @@
                             <CheckBox x:Name="checkSTV" HorizontalAlignment="Left" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
                             <CheckBox x:Name="checkRenderAvatars" HorizontalAlignment="Left" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
                             <CheckBox x:Name="checkOffline" HorizontalAlignment="Left" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
+                            <CheckBox x:Name="checkGiphyGifs" HorizontalAlignment="Left" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
+                            <TextBox x:Name="textGifMaxHeight" Text="50" Width="50" HorizontalAlignment="Left" Margin="0,7,0,0" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
+                            <TextBox x:Name="textImageCacheMb" Text="256" Width="50" HorizontalAlignment="Left" Margin="0,7,0,0" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                         </StackPanel>
                         <StackPanel Orientation="Vertical" Margin="20,10,0,5">
                             <TextBlock Text="Chat Badge Filter:" Foreground="{DynamicResource AppText}"/>
@@ -187,7 +195,7 @@
                             <ComboBox x:Name="comboFormat" MinWidth="120" MaxWidth="300" HorizontalAlignment="Left" SelectionChanged="ComboFormat_OnSelectionChanged" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                             <ComboBox x:Name="comboCodec" MinWidth="120" MaxWidth="300" HorizontalAlignment="Left" SelectionChanged="ComboCodec_OnSelectionChanged" Margin="0,7,0,0" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                             <TextBox x:Name="textFramerate" Text="30" Width="50" HorizontalAlignment="Left" Margin="0,7,0,0" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
-                            <hc:NumericUpDown x:Name="numParallelJobs" Value="0" Minimum="0" Maximum="16" DecimalPlaces="0" Width="75" HorizontalAlignment="Left" Margin="0,7,0,0" ToolTip="0 = Auto, 1 = Single process, 2-16 = Parallel FFmpeg segments" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
+                            <hc:NumericUpDown x:Name="numParallelJobs" Value="0" Minimum="0" Maximum="16" Width="75" HorizontalAlignment="Left" Margin="0,7,0,0" ToolTip="0 = Auto, 1 = Single process, 2-16 = Parallel FFmpeg segments" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}"/>
                             <CheckBox x:Name="checkMask" HorizontalAlignment="Left" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
                             <CheckBox x:Name="CheckRenderSharpening" Margin="0,6,0,0" BorderBrush="{DynamicResource AppElementBorder}"/>
                         </StackPanel>
@@ -259,8 +267,12 @@
             </StackPanel>
         </StackPanel>
         <StackPanel Grid.Column="4" Grid.Row="2" Grid.RowSpan="2">
+            <TextBlock Text="Live Preview:" Foreground="{DynamicResource AppText}"/>
+            <Border Margin="0,3,0,8" Height="185" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" BorderThickness="1" ClipToBounds="True">
+                <Image x:Name="imgPreview" Stretch="None" HorizontalAlignment="Left" VerticalAlignment="Bottom" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+            </Border>
             <TextBlock Text="Log:" Foreground="{DynamicResource AppText}"/>
-            <RichTextBox Margin="0,3" IsReadOnly="True" Name="textLog" Height="230" VerticalScrollBarVisibility="Auto" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}">
+            <RichTextBox Margin="0,3" IsReadOnly="True" Name="textLog" Height="150" VerticalScrollBarVisibility="Auto" Background="{DynamicResource AppElementBackground}" BorderBrush="{DynamicResource AppElementBorder}" Foreground="{DynamicResource AppText}">
                 <RichTextBox.Resources>
                     <Style TargetType="{x:Type Paragraph}">
                         <Setter Property="Margin" Value="0" />

@@ -852,7 +852,7 @@ namespace TwitchDownloaderWPF.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool DisperseCommentOffsets {
             get {
                 return ((bool)(this["DisperseCommentOffsets"]));
@@ -1110,6 +1110,54 @@ namespace TwitchDownloaderWPF.Properties {
             }
             set {
                 this["ParallelJobs"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool GiphyGifs {
+            get {
+                return ((bool)(this["GiphyGifs"]));
+            }
+            set {
+                this["GiphyGifs"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public int GifMaxHeightPercent {
+            get {
+                return ((int)(this["GifMaxHeightPercent"]));
+            }
+            set {
+                this["GifMaxHeightPercent"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("256")]
+        public int ImageCacheMb {
+            get {
+                return ((int)(this["ImageCacheMb"]));
+            }
+            set {
+                this["ImageCacheMb"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Normal")]
+        public string FontStyle {
+            get {
+                return ((string)(this["FontStyle"]));
+            }
+            set {
+                this["FontStyle"] = value;
             }
         }
     }
